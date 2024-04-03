@@ -31,17 +31,23 @@ static const int ESPTOUCH_DONE_BIT = BIT2;  // Бит успешной отпр�
 char open_weather_map_api_key[] = "19fcdfb788eed5e53824116dc41ebe90";
 char city[] = "Moscow";
 char country_code[] = "RU";
-char *response_data = NULL;
-size_t response_len = 0;
-bool all_chunks_received = false;
+char *openweather_data = NULL;
+size_t openweather_len = 0;
 time_t sunrise; // В UNIX формате
 time_t sunset;  // В UNIX формате
 
-char mqttClient[32];
+esp_mqtt_client_handle_t mqttClient;
+
+char mqttHostname[32];
 const int mqttPort = 15476;
 const char *mqttServer = "mqtt://m9.wqtt.ru";
 const char *mqttUser = "u_3MLZE1";
 const char *mqttPass = "78C0pl7e";
+
+// const int mqttPort = 10528;
+// const char *mqttServer = "mqtt://m5.wqtt.ru";
+// const char *mqttUser = "u_6V43IR";
+// const char *mqttPass = "S6F1CdP0";
 
 char mqttTopicCheckOnline[50];
 char mqttTopicControl[50];
@@ -51,6 +57,40 @@ char mqttTopicAddTimer[50];
 char mqttTopicAddSunrise[50];
 char mqttTopicAddSunset[50];
 
+int mqttTopicStatusQoS = 1;
+int mqttTopicCheckOnlineQoS = 1;
+int mqttTopicControlQoS = 1;
+int mqttTopicTimersQoS = 1;
+int mqttTopicAddTimerQoS = 1;
+int mqttTopicAddSunriseQoS = 1;
+int mqttTopicAddSunsetQoS = 1;
+
+int mqttTopicStatusRet = 1;
+int mqttTopicCheckOnlinetRet = 1;
+int mqttTopicControlRet = 1;
+int mqttTopicTimersRet = 1;
+int mqttTopicAddTimerRet = 1;
+int mqttTopicAddSunriseRet = 1;
+int mqttTopicAddSunsetRet = 1;
+
+typedef struct
+{
+    time_t sunriseSec;
+    time_t sunriseMin;
+    time_t sunriseHour;
+    time_t sunsetSec;
+    time_t sunsetMin;
+    time_t sunsetHour;
+    char str_sunrise[10];
+    char str_sunset[10];
+    char last_updated[20];
+    bool dataReady;
+} SunriseSunsetTime;
+
+SunriseSunsetTime sstime;
+
+// SunrieseSunsetTime sstime;
+
 static EventGroupHandle_t s_wifi_event_group; // Группа событий
 wifi_config_t wifi_config;                    // Структура для хранения настроек WIFI
 
@@ -58,26 +98,38 @@ static int s_retry_num = 0;
 bool ssid_loaded = false;
 bool password_loaded = false;
 bool time_sync = false;
+bool openweather_received = false;
 
 static void smartconfig_task(void *param);
 static void wifi_connect_task(void *param);
 static void ota_task(void *param);
-void sntp_time_sync_notification_cb(struct timeval *tv);
-void get_sunrise_sunset(const char *json_string);
+SunriseSunsetTime get_sunrise_sunset(const char *json_string);
+static void mqtt_start(void);
+void time_sync_start(const char *tz);
+void time_sync_cb(struct timeval *tv);
+void timer_cb(TimerHandle_t pxTimer);
 
-char *mqttStatusPayload()
+void time_sync_start(const char *tz)
 {
-    cJSON *sunrise_json = NULL;
-    cJSON *sunset_json = NULL;
-    cJSON *json = cJSON_CreateObject();
-    char *string;
+    // Выбираем часовой пояс и запускаем синхронизацию времени с SNTP
+    setenv("TZ", tz, 1);
+    tzset();
+    sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    sntp_setservername(0, "pool.ntp.org");
+    sntp_setservername(1, "time.nist.gov");
+    sntp_set_time_sync_notification_cb(time_sync_cb);
+    sntp_init();
+}
 
-    sunrise_json = cJSON_CreateNumber(sunrise);
-    sunset_json = cJSON_CreateNumber(sunset);
-    cJSON_AddItemToObject(json, "sunrise", sunrise);
-    cJSON_AddItemToObject(json, "sunset", sunset);
-    
-    string = cJSON_Print(json);
+char *mqttStatusJson(SunriseSunsetTime _time)
+{
+    cJSON *json = cJSON_CreateObject();
+
+    cJSON_AddStringToObject(json, "sunrise", _time.str_sunrise);
+    cJSON_AddStringToObject(json, "sunset", _time.str_sunset);
+    cJSON_AddStringToObject(json, "last_updated", _time.last_updated);
+
+    char *string = cJSON_Print(json);
     cJSON_Delete(json);
     return string;
 }
@@ -89,16 +141,25 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
     {
     case HTTP_EVENT_ON_DATA:
         // Resize the buffer to fit the new chunk of data
-        response_data = realloc(response_data, response_len + evt->data_len);
-        memcpy(response_data + response_len, evt->data, evt->data_len);
-        response_len += evt->data_len;
+        openweather_data = realloc(openweather_data, openweather_len + evt->data_len);
+        memcpy(openweather_data + openweather_len, evt->data, evt->data_len);
+        openweather_len += evt->data_len;
         break;
+
     case HTTP_EVENT_ON_FINISH:
-        all_chunks_received = true;
-        ESP_LOGI("http_event_handler", "OpenWeatherAPI received data: %s", response_data);
-        // get_temp_pressure_humidity(response_data);
-        get_sunrise_sunset(response_data);
+        ESP_LOGI("http_event_handler", "OpenWeatherAPI received data: %s", openweather_data);
+        openweather_received = true;
+    
+        /* Выделяем из ответа время заката/восхода, преобразуем в JSON и публикуем */
+        sstime = get_sunrise_sunset(openweather_data);
+        char *str = mqttStatusJson(sstime);
+        printf("mqtt status JSON string: %s\n", str);
+        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, str, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
+        ESP_LOGI("mqtt_event", "MQTT topic %s publish success, msg_id=%d", mqttTopicCheckOnline, msg_id);
+
+        free(openweather_data);
         break;
+
     default:
         break;
     }
@@ -108,17 +169,9 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
 /* Функция обработчик сообщений MQTT */
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
-    /*
-     * Параметры MQTT
-     * QoS 0-отправить и забыть, 1-доставить минимум 1 раз, 2-доставить точно 1 раз
-     * retain 0-брокер не хранит сообщение, 1-брокер сохраняет сообщение
-     */
-    int QoS;
-    int retain;
-
     // ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
     esp_mqtt_event_handle_t event = event_data;
-    esp_mqtt_client_handle_t client = event->client;
+    // mqttClient = event->client;
     int msg_id;
     switch ((esp_mqtt_event_id_t)event_id)
     {
@@ -128,14 +181,28 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI("mqtt_event", "MQTT_EVENT_CONNECTED");
-        // Публикуем состояние подключения
-        QoS = 1;
-        retain = 1;
-        msg_id = esp_mqtt_client_publish(client, mqttTopicCheckOnline, "online", 0, QoS, retain);
+        // Публикуем состояние и подписываемся на топики
+        msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicCheckOnline, "online", 0, mqttTopicCheckOnlineQoS, mqttTopicCheckOnlinetRet);
         ESP_LOGI("mqtt_event", "MQTT topic %s publish success, msg_id=%d", mqttTopicCheckOnline, msg_id);
-        //msg_id = esp_mqtt_client_subscribe(client, mqttTopicAddSunrise, QoS);
-        //ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddSunrise, msg_id);
-        msg_id = esp_mqtt_client_publish(client, mqttTopicStatus, mqttStatusPayload(), 0, QoS, retain);
+
+        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicAddSunrise, mqttTopicAddSunriseQoS);
+        ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddSunrise, msg_id);
+
+        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicAddSunset, mqttTopicAddSunsetQoS);
+        ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddSunset, msg_id);
+
+        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicAddTimer, mqttTopicAddTimerQoS);
+        ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddTimer, msg_id);
+
+        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicStatus, mqttTopicStatusQoS);
+        ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicStatus, msg_id);
+
+        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicTimers, mqttTopicTimersQoS);
+        ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicTimers, msg_id);
+
+        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicControl, mqttTopicControlQoS);
+        ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicControl, msg_id);
+
         break;
 
     case MQTT_EVENT_DISCONNECTED:
@@ -173,6 +240,36 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 /* Функция обработчик событий WiFi, IP, SC (SmartConfig) */
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
+    // switch (event_id)
+    // {
+    // case WIFI_EVENT_STA_START:
+    //     if (ssid_loaded && password_loaded)
+    //     {
+    //         xTaskCreate(wifi_connect_task, "wifi_connect_task", 4096, NULL, 3, NULL);
+    //     }
+    //     else
+    //     {
+    //         xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 3, NULL);
+    //     }
+    //     break;
+    // case WIFI_EVENT_STA_DISCONNECTED:
+    //     if (s_retry_num < ESP_MAX_RETRY)
+    //     {
+    //         esp_wifi_connect();
+    //         s_retry_num++;
+    //         ESP_LOGI("wifi_event_handler", "Retry to connect to the AP");
+    //     }
+    //     else
+    //     {
+    //         xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+    //     }
+    //     ESP_LOGE("wifi_event_handler", "Connect to the AP fail");
+    //     break;
+    // case IP_EVENT_STA_GOT_IPIP_EVENT_STA_GOT_IP:
+
+    //  default:
+    //     break;
+    // }
     /* Режим работы STA */
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
     {
@@ -210,16 +307,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 
-        // Установка часового пояска
-        setenv("TZ", "MSK-3", 1);
-        tzset();
-
-        // Запускаем синхронизацию времени с SNTP
-        sntp_setoperatingmode(SNTP_OPMODE_POLL);
-        sntp_setservername(0, "pool.ntp.org");
-        sntp_setservername(1, "time.nist.gov");
-        sntp_set_time_sync_notification_cb(sntp_time_sync_notification_cb);
-        sntp_init();
+        // Запускаем синхронизацию времени
+        time_sync_start("MSK-3");
     }
     /* smartconfig завершил сканирование точек доступа */
     else if (event_base == SC_EVENT && event_id == SC_EVENT_SCAN_DONE)
@@ -304,6 +393,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 /* Задача запроса данных openweathermap */
 void openweather_api_task(void *pvParameters)
 {
+    openweather_received = false;
+
     char open_weather_map_url[200];
     snprintf(open_weather_map_url,
              sizeof(open_weather_map_url),
@@ -346,28 +437,38 @@ void openweather_api_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
-void get_sunrise_sunset(const char *json_string)
+SunriseSunsetTime get_sunrise_sunset(const char *json_string)
 {
+    SunriseSunsetTime _time;
+
     // Парсим JSON строку
     cJSON *str = cJSON_Parse(json_string);
     cJSON *sys = cJSON_GetObjectItemCaseSensitive(str, "sys");
 
     // Читаем timezone, sunset, sunrise в UNIX формате
-    int timezone = cJSON_GetObjectItemCaseSensitive(str, "timezone")->valueint;
     sunrise = cJSON_GetObjectItemCaseSensitive(sys, "sunrise")->valueint;
     sunset = cJSON_GetObjectItemCaseSensitive(sys, "sunset")->valueint;
 
     // Переводим из UNIX формата в читаемый
     struct tm *tm_sunrise;
     tm_sunrise = localtime(&sunrise);
-    ESP_LOGI("get_sunrise_sunset", "Time sunrise %02d:%02d:%02d", tm_sunrise->tm_hour, tm_sunrise->tm_min, tm_sunrise->tm_sec);
+    strftime(_time.str_sunrise, sizeof(_time.str_sunrise), "%H:%M:%S", tm_sunrise);
+    ESP_LOGI("get_sunrise_sunset", "Time sunrise: %s", _time.str_sunrise);
 
     struct tm *tm_sunset;
     tm_sunset = localtime(&sunset);
-    ESP_LOGI("get_sunrise_sunset", "Time sunset %02d:%02d:%02d", tm_sunset->tm_hour, tm_sunset->tm_min, tm_sunset->tm_sec);
+    strftime(_time.str_sunset, sizeof(_time.str_sunset), "%H:%M:%S", tm_sunset);
+    ESP_LOGI("get_sunrise_sunset", "Time sunset: %s", _time.str_sunset);
+
+    struct tm *tm_now;
+    time_t now = time(NULL);
+    tm_now = localtime(&now);
+    strftime(_time.last_updated, sizeof(_time.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
+    ESP_LOGI("get_sunrise_sunset", "Last sunrise/sunset updated: %s", _time.last_updated);
 
     cJSON_Delete(str);
-    free(response_data);
+
+    return _time;
 }
 
 /* Инициализация клиента MQTT */
@@ -383,26 +484,27 @@ static void mqtt_start(void)
     uint8_t mac[6];
     ESP_ERROR_CHECK(esp_efuse_mac_get_default(mac));
 
-    sprintf(mqttClient, "eShader-%x:%x:%x:%x:%x:%x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    strcpy(mqttTopicCheckOnline, mqttClient);
+    sprintf(mqttHostname, "eShader-%x:%x:%x:%x:%x:%x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    strcpy(mqttTopicCheckOnline, mqttHostname);
     strcat(mqttTopicCheckOnline, "/checkonline");
-    strcpy(mqttTopicControl, mqttClient);
+    strcpy(mqttTopicControl, mqttHostname);
     strcat(mqttTopicControl, "/control");
-    strcpy(mqttTopicStatus, mqttClient);
+    strcpy(mqttTopicStatus, mqttHostname);
     strcat(mqttTopicStatus, "/status");
-    strcpy(mqttTopicTimers, mqttClient);
+    strcpy(mqttTopicTimers, mqttHostname);
     strcat(mqttTopicTimers, "/timers");
-    strcpy(mqttTopicAddTimer, mqttClient);
+    strcpy(mqttTopicAddTimer, mqttHostname);
     strcat(mqttTopicAddTimer, "/addtimer");
-    strcpy(mqttTopicAddSunrise, mqttClient);
+    strcpy(mqttTopicAddSunrise, mqttHostname);
     strcat(mqttTopicAddSunrise, "/addsunrise");
-    strcpy(mqttTopicAddSunset, mqttClient);
+    strcpy(mqttTopicAddSunset, mqttHostname);
     strcat(mqttTopicAddSunset, "/addsunset");
 
-    ESP_LOGI("mqtt_init", "MQTT start. Client ID: %s", mqttClient);
-    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
-    esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
-    esp_mqtt_client_start(client);
+    mqttClient = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_register_event(mqttClient, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+    esp_mqtt_client_start(mqttClient);
+
+    ESP_LOGI("mqtt_init", "MQTT start. Hostname: %s", mqttHostname);
 }
 
 /* Функция инциализации WiFi*/
@@ -503,6 +605,7 @@ static void wifi_connect_task(void *param)
         else if (uxBits & WIFI_FAIL_BIT)
         {
             ESP_LOGI("wifi_connect_task", "Failed to connect to SSID: %s, password: %s", wifi_config.sta.ssid, wifi_config.sta.password);
+            esp_restart();
         }
         else
         {
@@ -512,7 +615,7 @@ static void wifi_connect_task(void *param)
     vTaskDelete(NULL);
 }
 /* Коллбек синхронизации времени по SNTP*/
-void sntp_time_sync_notification_cb(struct timeval *tv)
+void time_sync_cb(struct timeval *tv)
 {
     struct tm timeinfo;
     char strftime_buf[20];
@@ -526,7 +629,7 @@ void sntp_time_sync_notification_cb(struct timeval *tv)
     }
     else
     {
-        strftime(strftime_buf, sizeof(strftime_buf), "%d.%m.%Y %H:%M:%S", &timeinfo);
+        strftime(strftime_buf, sizeof(strftime_buf), "%H:%M:%S %d.%m.%Y", &timeinfo);
         ESP_LOGI("sntp_time_sync", "Time synchronization completed, current time: %s", strftime_buf);
 
         // Запускаем программный таймер с периодом 1 секунда
@@ -535,6 +638,12 @@ void sntp_time_sync_notification_cb(struct timeval *tv)
             ESP_LOGI("sntp_time_sync", "Timer started...");
         }
         time_sync = true;
+
+        // Получаем время восхода/заката из openweather api
+        xTaskCreate(&openweather_api_task, "openweather_api_task", 4096, NULL, 3, NULL);
+
+        // Запускаем MQTT
+        mqtt_start();
     };
 }
 
@@ -543,16 +652,25 @@ void timer_cb(TimerHandle_t pxTimer)
 {
     unsigned long now;
     struct tm *tm_now;
+
     if (time_sync)
     {
         now = time(NULL);
         tm_now = localtime(&now);
         ESP_LOGI("timer", "Time now: %lu %02d:%02d:%02d", now, tm_now->tm_hour, tm_now->tm_min, tm_now->tm_sec);
-        if (tm_now->tm_hour == 14 && tm_now->tm_min == 36 && tm_now->tm_sec == 0)
+        if (tm_now->tm_hour == 0 && tm_now->tm_min == 0 && tm_now->tm_sec == 0)
+        {
             xTaskCreate(&openweather_api_task, "openweather_api_task", 4096, NULL, 3, NULL);
-        if (tm_now->tm_hour == 16 && tm_now->tm_min == 13 && tm_now->tm_sec == 0)
-            //xTaskCreate(&ota_task, "ota_task", 4096, NULL, 3, NULL);
-            mqtt_start();
+        }
+
+        if (openweather_received)
+        {
+        }
+
+        // if (tm_now->tm_hour == 16 && tm_now->tm_min == 13 && tm_now->tm_sec == 0)
+        // {
+        //     xTaskCreate(&ota_task, "ota_task", 4096, NULL, 3, NULL);
+        // }
     }
     else
     {
@@ -639,14 +757,14 @@ void app_main(void)
         nvs_close(my_handle);
     }
 
-    //
+    /*
     char ssid[32] = "mywifi";
     char pass[32] = "mypass123";
     memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
     memcpy(wifi_config.sta.password, pass, sizeof(wifi_config.sta.ssid));
     password_loaded = true;
     ssid_loaded = true;
-    //
+    */
 
     wifi_init();
 
