@@ -75,21 +75,12 @@ int mqttTopicAddSunsetRet = 1;
 
 typedef struct
 {
-    time_t sunriseSec;
-    time_t sunriseMin;
-    time_t sunriseHour;
-    time_t sunsetSec;
-    time_t sunsetMin;
-    time_t sunsetHour;
     char str_sunrise[10];
     char str_sunset[10];
     char last_updated[20];
-    bool dataReady;
-} SunriseSunsetTime;
+} StatusStruct;
 
-SunriseSunsetTime sstime;
-
-// SunrieseSunsetTime sstime;
+StatusStruct _status;
 
 static EventGroupHandle_t s_wifi_event_group; // Группа событий
 wifi_config_t wifi_config;                    // Структура для хранения настроек WIFI
@@ -103,7 +94,7 @@ bool openweather_received = false;
 static void smartconfig_task(void *param);
 static void wifi_connect_task(void *param);
 static void ota_task(void *param);
-SunriseSunsetTime get_sunrise_sunset(const char *json_string);
+StatusStruct get_sunrise_sunset(const char *json_string);
 static void mqtt_start(void);
 void time_sync_start(const char *tz);
 void time_sync_cb(struct timeval *tv);
@@ -121,13 +112,13 @@ void time_sync_start(const char *tz)
     sntp_init();
 }
 
-char *mqttStatusJson(SunriseSunsetTime _time)
+char *mqttStatusJson(StatusStruct status)
 {
     cJSON *json = cJSON_CreateObject();
 
-    cJSON_AddStringToObject(json, "sunrise", _time.str_sunrise);
-    cJSON_AddStringToObject(json, "sunset", _time.str_sunset);
-    cJSON_AddStringToObject(json, "last_updated", _time.last_updated);
+    cJSON_AddStringToObject(json, "sunrise", status.str_sunrise);
+    cJSON_AddStringToObject(json, "sunset", status.str_sunset);
+    cJSON_AddStringToObject(json, "last_updated", status.last_updated);
 
     char *string = cJSON_Print(json);
     cJSON_Delete(json);
@@ -149,10 +140,10 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
     case HTTP_EVENT_ON_FINISH:
         ESP_LOGI("http_event_handler", "OpenWeatherAPI received data: %s", openweather_data);
         openweather_received = true;
-    
+
         /* Выделяем из ответа время заката/восхода, преобразуем в JSON и публикуем */
-        sstime = get_sunrise_sunset(openweather_data);
-        char *str = mqttStatusJson(sstime);
+        _status = get_sunrise_sunset(openweather_data);
+        char *str = mqttStatusJson(_status);
         printf("mqtt status JSON string: %s\n", str);
         int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, str, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
         ESP_LOGI("mqtt_event", "MQTT topic %s publish success, msg_id=%d", mqttTopicCheckOnline, msg_id);
@@ -437,9 +428,9 @@ void openweather_api_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
-SunriseSunsetTime get_sunrise_sunset(const char *json_string)
+StatusStruct get_sunrise_sunset(const char *json_string)
 {
-    SunriseSunsetTime _time;
+    StatusStruct status;
 
     // Парсим JSON строку
     cJSON *str = cJSON_Parse(json_string);
@@ -452,23 +443,23 @@ SunriseSunsetTime get_sunrise_sunset(const char *json_string)
     // Переводим из UNIX формата в читаемый
     struct tm *tm_sunrise;
     tm_sunrise = localtime(&sunrise);
-    strftime(_time.str_sunrise, sizeof(_time.str_sunrise), "%H:%M:%S", tm_sunrise);
-    ESP_LOGI("get_sunrise_sunset", "Time sunrise: %s", _time.str_sunrise);
+    strftime(status.str_sunrise, sizeof(status.str_sunrise), "%H:%M:%S", tm_sunrise);
+    ESP_LOGI("get_sunrise_sunset", "Time sunrise: %s", status.str_sunrise);
 
     struct tm *tm_sunset;
     tm_sunset = localtime(&sunset);
-    strftime(_time.str_sunset, sizeof(_time.str_sunset), "%H:%M:%S", tm_sunset);
-    ESP_LOGI("get_sunrise_sunset", "Time sunset: %s", _time.str_sunset);
+    strftime(status.str_sunset, sizeof(status.str_sunset), "%H:%M:%S", tm_sunset);
+    ESP_LOGI("get_sunrise_sunset", "Time sunset: %s", status.str_sunset);
 
     struct tm *tm_now;
     time_t now = time(NULL);
     tm_now = localtime(&now);
-    strftime(_time.last_updated, sizeof(_time.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
-    ESP_LOGI("get_sunrise_sunset", "Last sunrise/sunset updated: %s", _time.last_updated);
+    strftime(status.last_updated, sizeof(status.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
+    ESP_LOGI("get_sunrise_sunset", "Last sunrise/sunset updated: %s", status.last_updated);
 
     cJSON_Delete(str);
 
-    return _time;
+    return status;
 }
 
 /* Инициализация клиента MQTT */
