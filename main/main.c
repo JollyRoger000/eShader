@@ -56,6 +56,8 @@ char mqttTopicTimers[50];
 char mqttTopicAddTimer[50];
 char mqttTopicAddSunrise[50];
 char mqttTopicAddSunset[50];
+char mqttTopicDelSunrise[50];
+char mqttTopicDelSunset[50];
 
 int mqttTopicStatusQoS = 1;
 int mqttTopicCheckOnlineQoS = 1;
@@ -64,6 +66,8 @@ int mqttTopicTimersQoS = 1;
 int mqttTopicAddTimerQoS = 1;
 int mqttTopicAddSunriseQoS = 1;
 int mqttTopicAddSunsetQoS = 1;
+int mqttTopicDelSunriseQoS = 1;
+int mqttTopicDelSunsetQoS = 1;
 
 int mqttTopicStatusRet = 1;
 int mqttTopicCheckOnlinetRet = 1;
@@ -72,15 +76,21 @@ int mqttTopicTimersRet = 1;
 int mqttTopicAddTimerRet = 1;
 int mqttTopicAddSunriseRet = 1;
 int mqttTopicAddSunsetRet = 1;
+int mqttTopicDelSunriseRet = 1;
+int mqttTopicDelSunsetRet = 1;
 
 typedef struct
 {
     char str_sunrise[10];
     char str_sunset[10];
     char last_updated[20];
+    bool onSunrise;
+    bool onSunset;
+    int shadeSunrise;
+    int shadeSunset;
 } StatusStruct;
 
-StatusStruct _status;
+StatusStruct _status = {.onSunrise = false, .shadeSunset = false, .shadeSunrise = 0, .shadeSunset = 0};
 
 static EventGroupHandle_t s_wifi_event_group; // Группа событий
 wifi_config_t wifi_config;                    // Структура для хранения настроек WIFI
@@ -112,17 +122,83 @@ void time_sync_start(const char *tz)
     sntp_init();
 }
 
-char *mqttStatusJson(StatusStruct status)
+void StatusJson(StatusStruct status)
 {
     cJSON *json = cJSON_CreateObject();
 
     cJSON_AddStringToObject(json, "sunrise", status.str_sunrise);
     cJSON_AddStringToObject(json, "sunset", status.str_sunset);
     cJSON_AddStringToObject(json, "last_updated", status.last_updated);
+    cJSON_AddNumberToObject(json, "shadeSunrise", status.shadeSunrise);
+    cJSON_AddNumberToObject(json, "shadeSunset", status.shadeSunset);
+    cJSON_AddBoolToObject(json, "onSunrise", status.onSunrise);
+    cJSON_AddBoolToObject(json, "onSunset", status.onSunset);
 
     char *string = cJSON_Print(json);
+
+    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, string, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
+    ESP_LOGI("mqtt_event", "MQTT topic [%s] publish success, msg_id=%d, string: %s", mqttTopicStatus, msg_id, string);
+
     cJSON_Delete(json);
-    return string;
+    free(string);
+}
+
+/* Функция сохранения целого числа в NVS*/
+esp_err_t SaveInt16ToNVS(char *key, int val)
+{
+    nvs_handle_t my_handle;
+    esp_err_t err;
+    char *tag = "save_nvs";
+    ESP_LOGI(tag, "Opening Non-Volatile Storage (NVS) handle... ");
+    /* Открываем NVS для записи*/
+    err = nvs_open("storage", NVS_READWRITE, &my_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(tag, "Error (%s) opening NVS handle!", esp_err_to_name(err));
+    }
+    else
+    {
+        ESP_LOGI(tag, "NVC handle open success");
+        ESP_LOGI(tag, "Saving data to NVC");
+        /* Сохраняем данные в памяти */
+        ESP_ERROR_CHECK(nvs_set_i16(my_handle, key, val));
+        /* Коммитим изменения */
+        ESP_LOGI(tag, "NVC commiting...");
+        ESP_ERROR_CHECK(nvs_commit(my_handle));
+
+        /* Закрываем указатель */
+        nvs_close(my_handle);
+    }
+    return err;
+}
+
+/* Функция сохранения строки в NVS*/
+esp_err_t SaveStrToNVS(char *key, char *val)
+{
+    nvs_handle_t my_handle;
+    esp_err_t err;
+    char *tag = "save_nvs";
+    ESP_LOGI(tag, "Opening Non-Volatile Storage (NVS) handle... ");
+    /* Открываем NVS для записи*/
+    err = nvs_open("storage", NVS_READWRITE, &my_handle);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(tag, "Error (%s) opening NVS handle!", esp_err_to_name(err));
+    }
+    else
+    {
+        ESP_LOGI(tag, "NVS handle open success");
+        ESP_LOGI(tag, "Saving data to NVS");
+        /* Сохраняем данные в памяти */
+        ESP_ERROR_CHECK(nvs_set_str(my_handle, key, val));
+        /* Коммитим изменения */
+        ESP_LOGI(tag, "NVS commiting...");
+        ESP_ERROR_CHECK(nvs_commit(my_handle));
+
+        /* Закрываем указатель */
+        nvs_close(my_handle);
+    }
+    return err;
 }
 
 /* Функция обработчик событий HTTP */
@@ -143,10 +219,7 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
 
         /* Выделяем из ответа время заката/восхода, преобразуем в JSON и публикуем */
         _status = get_sunrise_sunset(openweather_data);
-        char *str = mqttStatusJson(_status);
-        printf("mqtt status JSON string: %s\n", str);
-        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, str, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-        ESP_LOGI("mqtt_event", "MQTT topic %s publish success, msg_id=%d", mqttTopicCheckOnline, msg_id);
+        StatusJson(_status);
 
         free(openweather_data);
         break;
@@ -160,62 +233,108 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
 /* Функция обработчик сообщений MQTT */
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
-    // ESP_LOGD(TAG, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
+    char *tag = "mqtt_event";
+    // ESP_LOGI(tag, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
     esp_mqtt_event_handle_t event = event_data;
     // mqttClient = event->client;
     int msg_id;
     switch ((esp_mqtt_event_id_t)event_id)
     {
     case MQTT_EVENT_BEFORE_CONNECT:
-        ESP_LOGI("mqtt_event", "MQTT_EVENT_BEFORE_CONNECT");
+        ESP_LOGI(tag, "MQTT_EVENT_BEFORE_CONNECT");
         break;
 
     case MQTT_EVENT_CONNECTED:
-        ESP_LOGI("mqtt_event", "MQTT_EVENT_CONNECTED");
+        ESP_LOGI(tag, "MQTT_EVENT_CONNECTED");
         // Публикуем состояние и подписываемся на топики
         msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicCheckOnline, "online", 0, mqttTopicCheckOnlineQoS, mqttTopicCheckOnlinetRet);
-        ESP_LOGI("mqtt_event", "MQTT topic %s publish success, msg_id=%d", mqttTopicCheckOnline, msg_id);
+        ESP_LOGI(tag, "MQTT topic %s publish success, msg_id=%d", mqttTopicCheckOnline, msg_id);
 
         msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicAddSunrise, mqttTopicAddSunriseQoS);
-        ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddSunrise, msg_id);
+        ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddSunrise, msg_id);
 
         msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicAddSunset, mqttTopicAddSunsetQoS);
-        ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddSunset, msg_id);
+        ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddSunset, msg_id);
 
         msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicAddTimer, mqttTopicAddTimerQoS);
-        ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddTimer, msg_id);
+        ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddTimer, msg_id);
 
         msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicStatus, mqttTopicStatusQoS);
-        ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicStatus, msg_id);
+        ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicStatus, msg_id);
 
         msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicTimers, mqttTopicTimersQoS);
-        ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicTimers, msg_id);
+        ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicTimers, msg_id);
 
         msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicControl, mqttTopicControlQoS);
-        ESP_LOGI("mqtt_event", "MQTT topic %s subscribe success, msg_id=%d", mqttTopicControl, msg_id);
+        ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicControl, msg_id);
+
+        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicDelSunrise, mqttTopicDelSunriseQoS);
+        ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicDelSunrise, msg_id);
+
+        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicDelSunset, mqttTopicDelSunsetQoS);
+        ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicDelSunset, msg_id);
 
         break;
 
     case MQTT_EVENT_DISCONNECTED:
-        ESP_LOGI("mqtt_event", "MQTT_EVENT_DISCONNECTED");
+        ESP_LOGI(tag, "MQTT_EVENT_DISCONNECTED");
         break;
 
     case MQTT_EVENT_SUBSCRIBED:
-        ESP_LOGI("mqtt_event", "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
+        ESP_LOGI(tag, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
         break;
 
     case MQTT_EVENT_UNSUBSCRIBED:
-        ESP_LOGI("mqtt_event", "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
+        ESP_LOGI(tag, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
         break;
 
     case MQTT_EVENT_PUBLISHED:
-        ESP_LOGI("mqtt_event", "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
+        ESP_LOGI(tag, "MQTT_EVENT_PUBLISHED, msg_id=%d", event->msg_id);
         break;
 
     case MQTT_EVENT_DATA:
-        ESP_LOGI("mqtt_event", "MQTT_EVENT_DATA");
-        printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
-        printf("DATA=%.*s\r\n", event->data_len, event->data);
+        ESP_LOGI(tag, "MQTT_EVENT_DATA");
+
+        char topic[50];
+        char data[200];
+        snprintf(topic, event->topic_len + 1, "%s", event->topic);
+        snprintf(data, event->data_len + 1, "%s", event->data);
+        printf("topic= %s\n", topic);
+        printf("data= %s\n", data);
+
+        if (strcmp(topic, mqttTopicAddSunrise) == 0)
+        {
+            _status.onSunrise = true;
+            _status.shadeSunrise = atoi(data);
+            ESP_LOGW(tag, "Add sunrise topic received. Set shade on sunrise: %d", _status.shadeSunrise);
+            StatusJson(_status);
+            SaveInt16ToNVS("shadeSunrise", _status.shadeSunrise);
+            SaveInt16ToNVS("onSunrise", _status.onSunrise);
+        }
+        if (strcmp(topic, mqttTopicAddSunset) == 0)
+        {
+            _status.onSunset = true;
+            _status.shadeSunset = atoi(data);
+            ESP_LOGW(tag, "Add sunset topic received. Set shade on sunset: %d", _status.shadeSunset);
+            StatusJson(_status);
+            SaveInt16ToNVS("shadeSunset", _status.shadeSunset);
+            SaveInt16ToNVS("onSunset", _status.onSunset);
+        }
+        if (strcmp(topic, mqttTopicDelSunrise) == 0)
+        {
+            _status.onSunrise = false;
+            ESP_LOGW(tag, "Delete sunrise topic received");
+            StatusJson(_status);
+            SaveInt16ToNVS("onSunrise", _status.onSunrise);
+        }
+        if (strcmp(topic, mqttTopicDelSunset) == 0)
+        {
+            _status.onSunset = false;
+            ESP_LOGW(tag, "Delete sunset topic received");
+            StatusJson(_status);
+            SaveInt16ToNVS("onSunset", _status.onSunset);
+        }
+
         break;
 
     case MQTT_EVENT_ERROR:
@@ -465,6 +584,7 @@ StatusStruct get_sunrise_sunset(const char *json_string)
 /* Инициализация клиента MQTT */
 static void mqtt_start(void)
 {
+    char *tag = "mqtt_start";
     const esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = mqttServer,
         .broker.address.port = mqttPort,
@@ -490,17 +610,25 @@ static void mqtt_start(void)
     strcat(mqttTopicAddSunrise, "/addsunrise");
     strcpy(mqttTopicAddSunset, mqttHostname);
     strcat(mqttTopicAddSunset, "/addsunset");
+    strcpy(mqttTopicDelSunset, mqttHostname);
+    strcat(mqttTopicDelSunset, "/delsunset");
+    strcpy(mqttTopicDelSunrise, mqttHostname);
+    strcat(mqttTopicDelSunrise, "/delsunrise");
 
     mqttClient = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(mqttClient, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(mqttClient);
 
-    ESP_LOGI("mqtt_init", "MQTT start. Hostname: %s", mqttHostname);
+    ESP_LOGI(tag, "MQTT start. Hostname: %s", mqttHostname);
 }
 
 /* Функция инциализации WiFi*/
 static void wifi_init(void)
 {
+    char *tag = "wifi_init";
+
+    ESP_LOGI(tag, "wifi initializating...");
+
     s_wifi_event_group = xEventGroupCreate();
     ESP_ERROR_CHECK(esp_netif_init());                // Инициализируем стек протоколов TCP/IP lwIP (Lightweight IP)
     ESP_ERROR_CHECK(esp_event_loop_create_default()); // Создаем системный цикл событий
@@ -671,6 +799,7 @@ void timer_cb(TimerHandle_t pxTimer)
 
 void app_main(void)
 {
+    char *tag = "main";
     // Инициализируем NVS
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
@@ -744,6 +873,48 @@ void app_main(void)
         default:
             ESP_LOGE("main", "Error (%s) reading!", esp_err_to_name(err));
         }
+
+        // ESP_LOGI(tag, "Reading onSunrise from NVS ... ");
+        // int *val;
+        // err = nvs_get_i16(my_handle, "onSunrise", &val);
+        // switch (err)
+        // {
+        // case ESP_OK:
+        //     _status.onSunrise = val;
+        //     ESP_LOGI(tag, "onSunrise read success: %d", _status.onSunrise);
+        //     break;
+        // case ESP_ERR_NVS_NOT_FOUND:
+        //     ESP_LOGW(tag, "onSunrise is not found");
+        //     break;
+
+        // default:
+        //     ESP_LOGE(tag, "Error (%s) reading!", esp_err_to_name(err));
+        //     break;
+        // }
+
+        ESP_LOGI(tag, "Reading ShadeSunrise from NVS ... ");
+        int *val;
+        err = nvs_get_i16(my_handle, "shadeSunrise", &val);
+        switch (err)
+        {
+        case ESP_OK:
+            _status.shadeSunrise = val;
+            ESP_LOGI(tag, "shadeSunrise read success: %d", _status.shadeSunrise);
+            break;
+        case ESP_ERR_NVS_NOT_FOUND:
+            ESP_LOGW(tag, "shadeSunrise is not found");
+            _status.shadeSunrise = 0;
+            ESP_LOGW(tag, "Set shadeSunrise to: %d", _status.shadeSunrise);
+            break;
+
+        default:
+            ESP_LOGE(tag, "Error (%s) reading!", esp_err_to_name(err));
+            _status.shadeSunrise = 0;
+            ESP_LOGE(tag, "Set shadeSunrise to: %d", _status.shadeSunrise);
+
+            break;
+        }
+
         // Close
         nvs_close(my_handle);
     }
