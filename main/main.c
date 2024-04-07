@@ -84,13 +84,13 @@ typedef struct
     char str_sunrise[10];
     char str_sunset[10];
     char last_updated[20];
-    bool onSunrise;
-    bool onSunset;
-    int shadeSunrise;
-    int shadeSunset;
+    uint8_t onSunrise;
+    uint8_t onSunset;
+    uint8_t shadeSunrise;
+    uint8_t shadeSunset;
 } StatusStruct;
 
-StatusStruct _status = {.onSunrise = false, .shadeSunset = false, .shadeSunrise = 0, .shadeSunset = 0};
+StatusStruct _status = {.onSunrise = 0, .onSunset = 0, .shadeSunrise = 0, .shadeSunset = 0};
 
 static EventGroupHandle_t s_wifi_event_group; // Группа событий
 wifi_config_t wifi_config;                    // Структура для хранения настроек WIFI
@@ -104,11 +104,32 @@ bool openweather_received = false;
 static void smartconfig_task(void *param);
 static void wifi_connect_task(void *param);
 static void ota_task(void *param);
-StatusStruct get_sunrise_sunset(const char *json_string);
+StatusStruct get_sunrise_sunset(const char *json_string, StatusStruct status_old);
 static void mqtt_start(void);
 void time_sync_start(const char *tz);
 void time_sync_cb(struct timeval *tv);
 void timer_cb(TimerHandle_t pxTimer);
+void onCalibrate();
+void onStop();
+void onShade(int shade);
+
+void onCalibrate()
+{
+    char *tag = "on_calibrate";
+    ESP_LOGI(tag, "CALIBRATE message received");
+}
+
+void onStop()
+{
+    char *tag = "on_stop";
+    ESP_LOGI(tag, "STOP message received");
+}
+
+void onShade(int shade)
+{
+    char *tag = "on_shade";
+    ESP_LOGI(tag, "SHADE [%d] message received", shade);
+}
 
 void time_sync_start(const char *tz)
 {
@@ -122,8 +143,11 @@ void time_sync_start(const char *tz)
     sntp_init();
 }
 
-void StatusJson(StatusStruct status)
+/* Функция преобразования структуры статуса в json строку*/
+char *mqttStatusJson(StatusStruct status)
 {
+    char *tag = "mqttStatusJson";
+
     cJSON *json = cJSON_CreateObject();
 
     cJSON_AddStringToObject(json, "sunrise", status.str_sunrise);
@@ -131,49 +155,47 @@ void StatusJson(StatusStruct status)
     cJSON_AddStringToObject(json, "last_updated", status.last_updated);
     cJSON_AddNumberToObject(json, "shadeSunrise", status.shadeSunrise);
     cJSON_AddNumberToObject(json, "shadeSunset", status.shadeSunset);
-    cJSON_AddBoolToObject(json, "onSunrise", status.onSunrise);
-    cJSON_AddBoolToObject(json, "onSunset", status.onSunset);
+    cJSON_AddNumberToObject(json, "onSunrise", status.onSunrise);
+    cJSON_AddNumberToObject(json, "onSunset", status.onSunset);
 
     char *string = cJSON_Print(json);
 
-    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, string, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-    ESP_LOGI("mqtt_event", "MQTT topic [%s] publish success, msg_id=%d, string: %s", mqttTopicStatus, msg_id, string);
-
     cJSON_Delete(json);
-    free(string);
+    return string;
 }
 
-/* Функция сохранения целого числа в NVS*/
-esp_err_t SaveInt16ToNVS(char *key, int val)
+/* Функция записи uint8 NVS */
+esp_err_t nvs_write_u8(char *key, uint8_t val)
 {
-    nvs_handle_t my_handle;
+    nvs_handle_t handle;
     esp_err_t err;
     char *tag = "save_nvs";
-    ESP_LOGI(tag, "Opening Non-Volatile Storage (NVS) handle... ");
-    /* Открываем NVS для записи*/
-    err = nvs_open("storage", NVS_READWRITE, &my_handle);
-    if (err != ESP_OK)
+    err = nvs_open("storage", NVS_READWRITE, &handle);
+    if (err == ESP_OK)
     {
-        ESP_LOGE(tag, "Error (%s) opening NVS handle!", esp_err_to_name(err));
+        ESP_LOGI(tag, "nvs open success");
+        ESP_LOGI(tag, "writing data (%d) to key (%s)", val, key);
+        err = nvs_set_u8(handle, key, val);
+        if (err == ESP_OK)
+        {
+            nvs_commit(handle);
+            ESP_LOGI(tag, "writing success");
+        }
+        else
+        {
+            ESP_LOGE(tag, "writing error (%s)", esp_err_to_name(err));
+        }
+        nvs_close(handle);
     }
     else
     {
-        ESP_LOGI(tag, "NVC handle open success");
-        ESP_LOGI(tag, "Saving data to NVC");
-        /* Сохраняем данные в памяти */
-        ESP_ERROR_CHECK(nvs_set_i16(my_handle, key, val));
-        /* Коммитим изменения */
-        ESP_LOGI(tag, "NVC commiting...");
-        ESP_ERROR_CHECK(nvs_commit(my_handle));
-
-        /* Закрываем указатель */
-        nvs_close(my_handle);
+        ESP_LOGE(tag, "nvs open error (%s)", esp_err_to_name(err));
     }
     return err;
 }
 
-/* Функция сохранения строки в NVS*/
-esp_err_t SaveStrToNVS(char *key, char *val)
+/* Функция записи char* NVS*/
+esp_err_t nvs_write_str(char *key, char *val)
 {
     nvs_handle_t my_handle;
     esp_err_t err;
@@ -188,14 +210,18 @@ esp_err_t SaveStrToNVS(char *key, char *val)
     else
     {
         ESP_LOGI(tag, "NVS handle open success");
-        ESP_LOGI(tag, "Saving data to NVS");
-        /* Сохраняем данные в памяти */
-        ESP_ERROR_CHECK(nvs_set_str(my_handle, key, val));
-        /* Коммитим изменения */
-        ESP_LOGI(tag, "NVS commiting...");
-        ESP_ERROR_CHECK(nvs_commit(my_handle));
+        ESP_LOGI(tag, "Writing data [%s] to key [%s] in NVS memory", val, key);
+        err = nvs_set_str(my_handle, key, val);
+        if (err == ESP_OK)
+        {
+            nvs_commit(my_handle);
+            ESP_LOGI(tag, "Writing success");
+        }
+        else
+        {
+            ESP_LOGE(tag, "Writing Error!");
+        }
 
-        /* Закрываем указатель */
         nvs_close(my_handle);
     }
     return err;
@@ -204,6 +230,7 @@ esp_err_t SaveStrToNVS(char *key, char *val)
 /* Функция обработчик событий HTTP */
 esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
+    const char *tag = "http_event_handler";
     switch (evt->event_id)
     {
     case HTTP_EVENT_ON_DATA:
@@ -214,12 +241,16 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
         break;
 
     case HTTP_EVENT_ON_FINISH:
-        ESP_LOGI("http_event_handler", "OpenWeatherAPI received data: %s", openweather_data);
+        ESP_LOGI(tag, "OpenWeatherAPI received data: %s", openweather_data);
         openweather_received = true;
 
         /* Выделяем из ответа время заката/восхода, преобразуем в JSON и публикуем */
-        _status = get_sunrise_sunset(openweather_data);
-        StatusJson(_status);
+        _status = get_sunrise_sunset(openweather_data, _status);
+        char *status = mqttStatusJson(_status);
+        ESP_LOGI(tag, "New status string: %s", status);
+        /* Публикуем новый статус */
+        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
+        ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
 
         free(openweather_data);
         break;
@@ -304,35 +335,74 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
         if (strcmp(topic, mqttTopicAddSunrise) == 0)
         {
-            _status.onSunrise = true;
+            _status.onSunrise = 1;
             _status.shadeSunrise = atoi(data);
             ESP_LOGW(tag, "Add sunrise topic received. Set shade on sunrise: %d", _status.shadeSunrise);
-            StatusJson(_status);
-            SaveInt16ToNVS("shadeSunrise", _status.shadeSunrise);
-            SaveInt16ToNVS("onSunrise", _status.onSunrise);
+
+            char *status = mqttStatusJson(_status);
+            ESP_LOGI(tag, "New status string: %s", status);
+            /* Публикуем новый статус */
+            msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
+            ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
+
+            nvs_write_u8("shade_sunrise", _status.shadeSunrise);
+            nvs_write_u8("onSunrise", _status.onSunrise);
         }
         if (strcmp(topic, mqttTopicAddSunset) == 0)
         {
-            _status.onSunset = true;
+            _status.onSunset = 1;
             _status.shadeSunset = atoi(data);
             ESP_LOGW(tag, "Add sunset topic received. Set shade on sunset: %d", _status.shadeSunset);
-            StatusJson(_status);
-            SaveInt16ToNVS("shadeSunset", _status.shadeSunset);
-            SaveInt16ToNVS("onSunset", _status.onSunset);
+
+            char *status = mqttStatusJson(_status);
+            ESP_LOGI(tag, "New status string: %s", status);
+            /* Публикуем новый статус */
+            msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
+            ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
+
+            nvs_write_u8("shade_sunset", _status.shadeSunset);
+            nvs_write_u8("onSunset", _status.onSunset);
         }
         if (strcmp(topic, mqttTopicDelSunrise) == 0)
         {
-            _status.onSunrise = false;
+            _status.onSunrise = 0;
             ESP_LOGW(tag, "Delete sunrise topic received");
-            StatusJson(_status);
-            SaveInt16ToNVS("onSunrise", _status.onSunrise);
+
+            char *status = mqttStatusJson(_status);
+            ESP_LOGI(tag, "New status string: %s", status);
+            /* Публикуем новый статус */
+            msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
+            ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
+
+            nvs_write_u8("onSunrise", _status.onSunrise);
         }
         if (strcmp(topic, mqttTopicDelSunset) == 0)
         {
-            _status.onSunset = false;
+            _status.onSunset = 0;
             ESP_LOGW(tag, "Delete sunset topic received");
-            StatusJson(_status);
-            SaveInt16ToNVS("onSunset", _status.onSunset);
+
+            char *status = mqttStatusJson(_status);
+            ESP_LOGI(tag, "New status string: %s", status);
+            /* Публикуем новый статус */
+            msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
+            ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
+
+            nvs_write_u8("onSunset", _status.onSunset);
+        }
+        if (strcmp(topic, mqttTopicControl) == 0)
+        {
+            if (strcmp(data, "calibrate") == 0)
+            {
+                onCalibrate();
+            }
+            else if (strcmp(data, "stop") == 0)
+            {
+                onStop();
+            }
+            else
+            {
+                onShade(atoi(data));
+            }
         }
 
         break;
@@ -452,31 +522,33 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
         memcpy(ssid, evt->ssid, sizeof(evt->ssid));
         memcpy(password, evt->password, sizeof(evt->password));
+        nvs_write_str("ssid", ssid);
+        nvs_write_str("pass", password);
         ESP_LOGI("wifi_event_handler", "Smartconfig got SSID and password. SSID: %s Pass: %s", ssid, password);
 
-        nvs_handle_t my_handle;
-        esp_err_t err;
-        /* Открываем NVS для записи*/
-        ESP_LOGI("wifi_event_handler", "Opening Non-Volatile Storage (NVS) handle... ");
-        err = nvs_open("storage", NVS_READWRITE, &my_handle);
-        if (err != ESP_OK)
-        {
-            ESP_LOGE("wifi_event_handler", "Error (%s) opening NVS handle!", esp_err_to_name(err));
-        }
-        else
-        {
-            ESP_LOGI("wifi_event_handler", "NVC handle open success");
-            ESP_LOGI("wifi_event_handler", "Saving data to NVC");
-            /* Сохраняем данные в памяти */
-            ESP_ERROR_CHECK(nvs_set_str(my_handle, "ssid", ssid));
+        // nvs_handle_t my_handle;
+        // esp_err_t err;
+        // /* Открываем NVS для записи*/
+        // ESP_LOGI("wifi_event_handler", "Opening Non-Volatile Storage (NVS) handle... ");
+        // err = nvs_open("storage", NVS_READWRITE, &my_handle);
+        // if (err != ESP_OK)
+        // {
+        //     ESP_LOGE("wifi_event_handler", "Error (%s) opening NVS handle!", esp_err_to_name(err));
+        // }
+        // else
+        // {
+        //     ESP_LOGI("wifi_event_handler", "NVC handle open success");
+        //     ESP_LOGI("wifi_event_handler", "Saving data to NVC");
+        //     /* Сохраняем данные в памяти */
+        //     ESP_ERROR_CHECK(nvs_set_str(my_handle, "ssid", ssid));
 
-            /* Коммитим изменения */
-            ESP_LOGI("wifi_event_handler", "NVC commiting...");
-            ESP_ERROR_CHECK(nvs_commit(my_handle));
+        //     /* Коммитим изменения */
+        //     ESP_LOGI("wifi_event_handler", "NVC commiting...");
+        //     ESP_ERROR_CHECK(nvs_commit(my_handle));
 
-            /* Закрываем указатель */
-            nvs_close(my_handle);
-        }
+        //     /* Закрываем указатель */
+        //     nvs_close(my_handle);
+        //}
         if (evt->type == SC_TYPE_ESPTOUCH_V2)
         {
             ESP_ERROR_CHECK(esp_smartconfig_get_rvd_data(rvd_data, sizeof(rvd_data)));
@@ -547,9 +619,15 @@ void openweather_api_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
-StatusStruct get_sunrise_sunset(const char *json_string)
+/* Выделяем из ответа openweather api данные о времени заката и восхода и записываем в структуру статуса */
+StatusStruct get_sunrise_sunset(const char *json_string, StatusStruct status_old)
 {
-    StatusStruct status;
+    char *tag = "get_sunrise_sunset";
+    StatusStruct status_new;
+    status_new.onSunrise = status_old.onSunrise;
+    status_new.onSunset = status_old.onSunset;
+    status_new.shadeSunrise = status_old.shadeSunrise;
+    status_new.shadeSunset = status_old.shadeSunset;
 
     // Парсим JSON строку
     cJSON *str = cJSON_Parse(json_string);
@@ -562,23 +640,23 @@ StatusStruct get_sunrise_sunset(const char *json_string)
     // Переводим из UNIX формата в читаемый
     struct tm *tm_sunrise;
     tm_sunrise = localtime(&sunrise);
-    strftime(status.str_sunrise, sizeof(status.str_sunrise), "%H:%M:%S", tm_sunrise);
-    ESP_LOGI("get_sunrise_sunset", "Time sunrise: %s", status.str_sunrise);
+    strftime(status_new.str_sunrise, sizeof(status_new.str_sunrise), "%H:%M:%S", tm_sunrise);
+    ESP_LOGI(tag, "Time sunrise: %s", status_new.str_sunrise);
 
     struct tm *tm_sunset;
     tm_sunset = localtime(&sunset);
-    strftime(status.str_sunset, sizeof(status.str_sunset), "%H:%M:%S", tm_sunset);
-    ESP_LOGI("get_sunrise_sunset", "Time sunset: %s", status.str_sunset);
+    strftime(status_new.str_sunset, sizeof(status_new.str_sunset), "%H:%M:%S", tm_sunset);
+    ESP_LOGI(tag, "Time sunset: %s", status_new.str_sunset);
 
     struct tm *tm_now;
     time_t now = time(NULL);
     tm_now = localtime(&now);
-    strftime(status.last_updated, sizeof(status.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
-    ESP_LOGI("get_sunrise_sunset", "Last sunrise/sunset updated: %s", status.last_updated);
+    strftime(status_new.last_updated, sizeof(status_new.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
+    ESP_LOGI(tag, "Last sunrise/sunset updated: %s", status_new.last_updated);
 
     cJSON_Delete(str);
 
-    return status;
+    return status_new;
 }
 
 /* Инициализация клиента MQTT */
@@ -782,10 +860,6 @@ void timer_cb(TimerHandle_t pxTimer)
             xTaskCreate(&openweather_api_task, "openweather_api_task", 4096, NULL, 3, NULL);
         }
 
-        if (openweather_received)
-        {
-        }
-
         // if (tm_now->tm_hour == 16 && tm_now->tm_min == 13 && tm_now->tm_sec == 0)
         // {
         //     xTaskCreate(&ota_task, "ota_task", 4096, NULL, 3, NULL);
@@ -809,124 +883,92 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    // Открываем NVS и читаем ssid и password
-    ESP_LOGI("main", "Opening Non-Volatile Storage (NVS) handle... ");
-    nvs_handle_t my_handle;
-    err = nvs_open("storage", NVS_READWRITE, &my_handle);
-    if (err != ESP_OK)
+    nvs_handle_t nvs_handle;
+    /* Пытаемся открыть NVS для чтения*/
+    err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    if (err == ESP_OK)
     {
-        ESP_LOGE("main", "Error (%s) opening NVS handle!", esp_err_to_name(err));
-        ssid_loaded = false;
-        password_loaded = false;
+        ESP_LOGI(tag, "nvs open success");
+        size_t size;
+        char *str = "";
+        /* Читаем ssid из NVS*/
+        err = nvs_get_str(nvs_handle, "ssid", NULL, &size);
+        if (err == ESP_OK)
+        {
+            str = malloc(size);
+            err = nvs_get_str(nvs_handle, "ssid", str, &size);
+            memcpy(wifi_config.sta.ssid, str, size);
+            ESP_LOGI(tag, "ssid reading success: %s", wifi_config.sta.ssid);
+            ssid_loaded = true;
+        }
+        else
+        {
+            ESP_LOGE(tag, "ssid reading error (%s)", esp_err_to_name(err));
+            ssid_loaded = false;
+        }
+
+        /* Читаем пароль из NVS */
+        err = nvs_get_str(nvs_handle, "pass", NULL, &size);
+        if (err == ESP_OK)
+        {
+            str = malloc(size);
+            err = nvs_get_str(nvs_handle, "pass", str, &size);
+            memcpy(wifi_config.sta.password, str, size);
+            ESP_LOGI(tag, "password reading success: %s", wifi_config.sta.password);
+            password_loaded = true;
+        }
+        else
+        {
+            ESP_LOGE(tag, "password reading error (%s)", esp_err_to_name(err));
+            password_loaded = false;
+        }
+
+        uint8_t data = 0;
+        /* Читаем процент затемнения при восходе */
+        err = nvs_get_u8(nvs_handle, "shade_sunset", &data);
+        if (err == ESP_OK)
+        {
+            _status.shadeSunset = data;
+            ESP_LOGI(tag, "shade sunset read success: %d", _status.shadeSunset);
+        }
+        else
+        {
+            _status.shadeSunset = 0;
+            ESP_LOGE(tag, "shade sunset read error (%s). Set value: %d", esp_err_to_name(err), _status.shadeSunset);
+        }
+
+        /* Читаем процент затемнения при закате */
+        err = nvs_get_u8(nvs_handle, "shade_sunrise", &data);
+        if (err == ESP_OK)
+        {
+            _status.shadeSunrise = data;
+            ESP_LOGI(tag, "shade sunrise read success: %d", _status.shadeSunrise);
+        }
+        else
+        {
+            _status.shadeSunrise = 0;
+            ESP_LOGE(tag, "shade sunrise read error (%s). Set value: %d", esp_err_to_name(err), _status.shadeSunrise);
+        }
+
+        nvs_close(nvs_handle);
     }
     else
     {
-        printf("Done\n");
-
-        ssid_loaded = false;
-        password_loaded = false;
-
-        /* Читаем SSID из NVS */
-        ESP_LOGI("main", "Reading ssid from NVS ... ");
-        size_t nvs_required_size;
-        err = nvs_get_str(my_handle, "ssid", NULL, &nvs_required_size);
-        switch (err)
-        {
-        case ESP_OK:
-            char *nvs_ret_data;
-            nvs_ret_data = malloc(nvs_required_size);
-            err = nvs_get_str(my_handle, "ssid", nvs_ret_data, &nvs_required_size);
-            memcpy(wifi_config.sta.ssid, nvs_ret_data, nvs_required_size);
-            ESP_LOGI("main", "SSID read success: %s", wifi_config.sta.ssid);
-            free(nvs_ret_data);
-            ssid_loaded = true;
-            break;
-
-        case ESP_ERR_NVS_NOT_FOUND:
-            ESP_LOGW("main", "SSID is not found");
-            break;
-
-        default:
-            ESP_LOGE("main", "Error (%s) reading!", esp_err_to_name(err));
-        }
-
-        /* Читаем PASS из NVS */
-        ESP_LOGI("main", "Reading password from NVS ... ");
-        err = nvs_get_str(my_handle, "pass", NULL, &nvs_required_size);
-        switch (err)
-        {
-        case ESP_OK:
-            printf("Done\n");
-            char *nvs_ret_data;
-            nvs_ret_data = malloc(nvs_required_size);
-            err = nvs_get_str(my_handle, "pass", nvs_ret_data, &nvs_required_size);
-            memcpy(wifi_config.sta.password, nvs_ret_data, nvs_required_size);
-            ESP_LOGI("main", "Password read success: %s", wifi_config.sta.password);
-            free(nvs_ret_data);
-            password_loaded = true;
-            break;
-
-        case ESP_ERR_NVS_NOT_FOUND:
-            ESP_LOGW("main", "Password is not found");
-            break;
-
-        default:
-            ESP_LOGE("main", "Error (%s) reading!", esp_err_to_name(err));
-        }
-
-        // ESP_LOGI(tag, "Reading onSunrise from NVS ... ");
-        // int *val;
-        // err = nvs_get_i16(my_handle, "onSunrise", &val);
-        // switch (err)
-        // {
-        // case ESP_OK:
-        //     _status.onSunrise = val;
-        //     ESP_LOGI(tag, "onSunrise read success: %d", _status.onSunrise);
-        //     break;
-        // case ESP_ERR_NVS_NOT_FOUND:
-        //     ESP_LOGW(tag, "onSunrise is not found");
-        //     break;
-
-        // default:
-        //     ESP_LOGE(tag, "Error (%s) reading!", esp_err_to_name(err));
-        //     break;
-        // }
-
-        ESP_LOGI(tag, "Reading ShadeSunrise from NVS ... ");
-        int *val;
-        err = nvs_get_i16(my_handle, "shadeSunrise", &val);
-        switch (err)
-        {
-        case ESP_OK:
-            _status.shadeSunrise = val;
-            ESP_LOGI(tag, "shadeSunrise read success: %d", _status.shadeSunrise);
-            break;
-        case ESP_ERR_NVS_NOT_FOUND:
-            ESP_LOGW(tag, "shadeSunrise is not found");
-            _status.shadeSunrise = 0;
-            ESP_LOGW(tag, "Set shadeSunrise to: %d", _status.shadeSunrise);
-            break;
-
-        default:
-            ESP_LOGE(tag, "Error (%s) reading!", esp_err_to_name(err));
-            _status.shadeSunrise = 0;
-            ESP_LOGE(tag, "Set shadeSunrise to: %d", _status.shadeSunrise);
-
-            break;
-        }
-
-        // Close
-        nvs_close(my_handle);
+        ESP_LOGE(tag, "nvs open error (%s)", esp_err_to_name(err));
+        _status.shadeSunrise = 0;
+        _status.shadeSunset = 0;
+        _status.onSunrise = 0;
+        _status.onSunset = 0;
     }
 
-    /*
-    char ssid[32] = "mywifi";
-    char pass[32] = "mypass123";
-    memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
-    memcpy(wifi_config.sta.password, pass, sizeof(wifi_config.sta.ssid));
-    password_loaded = true;
-    ssid_loaded = true;
-    */
+    // /*
+    // char ssid[32] = "mywifi";
+    // char pass[32] = "mypass123";
+    // memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
+    // memcpy(wifi_config.sta.password, pass, sizeof(wifi_config.sta.ssid));
+    // password_loaded = true;
+    // ssid_loaded = true;
+    // */
 
     wifi_init();
 
