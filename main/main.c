@@ -4,12 +4,10 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "esp_wifi.h"
-#include "esp_wpa2.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "nvs_flash.h"
-#include "esp_netif.h"
 #include "esp_smartconfig.h"
 #include "mqtt_client.h"
 #include "esp_sntp.h"
@@ -19,9 +17,21 @@
 #include "esp_https_ota.h"
 #include "esp_mac.h"
 #include <cJSON.h>
+#include <driver/gpio.h>
+#include <rom/ets_sys.h>
+
+#define SM_DIR 19
+#define SM_STEP 17
+#define SM_nEN 18
+#define SW 22
+#define LED_STATUS 23
+#define INIT_RESET_BTN 13
+
+#define WEB_SERVER "https://api.telegram.org"
+#define WEB_PORT "443"
+#define WEB_URL "https://api.telegram.org/bot7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM/getme"
 
 TimerHandle_t _timer = NULL;
-// static const HTTP_RESPONSE_BUFFER_SIZE = 1024;
 static const int ESP_MAX_RETRY = 5;
 static const int WIFI_CONNECTED_BIT = BIT0; // Бит успешного подключения к сети
 static const int WIFI_FAIL_BIT = BIT1;      // Бит ошибки подключения (выставляется при ошибке подключения ESP_MAX_RETRY раз)
@@ -96,6 +106,16 @@ static EventGroupHandle_t s_wifi_event_group; // Группа событий
 wifi_config_t wifi_config;                    // Структура для хранения настроек WIFI
 
 static int s_retry_num = 0;
+int targetPos = 0;  // Tagret motor position in steps
+int shade = 0;      // Tagret motor position in percent
+int currentPos = 0; // Current motor position
+int shadeLenght = 0;
+int calibrateCnt = 0;
+char *calibrateStatus = "false";
+char *moveStatus = "stopped";
+bool sw_flag = false;
+bool init_flag = false;
+bool targetFlag = false;
 bool ssid_loaded = false;
 bool password_loaded = false;
 bool time_sync = false;
@@ -116,19 +136,101 @@ void onShade(int shade);
 void onCalibrate()
 {
     char *tag = "on_calibrate";
-    ESP_LOGI(tag, "CALIBRATE message received");
+    ESP_LOGW(tag, "CALIBRATE message received");
+
+    // Serial.println("onCalibrate function");
+    // calibrateCnt = 0;
+
+    // moveStatus = "calibrating";
+    // calibrateStatus = "progress";
+    // shadeDoc["calibrateStatus"] = calibrateStatus;
+    // shadeDoc["moveStatus"] = moveStatus;
+    // shadeDoc["currentPos"] = currentPos;
+
+    // // Публикация топика
+    // serializeJson(shadeDoc, jsonBuf);
+    // if (mqttClient.publish(mqttTopicStatus, jsonBuf, false))
+    //     Serial.println("Publish status topic success");
+    // else
+    //     Serial.println("Failed to publish status topic");
 }
 
 void onStop()
 {
     char *tag = "on_stop";
-    ESP_LOGI(tag, "STOP message received");
+    ESP_LOGW(tag, "STOP message received");
+
+    // Serial.println("onStop function");
+
+    // moveStatus = "stopped";
+    // shadeDoc["moveStatus"] = moveStatus;
+    // if (calibrateStatus == "progress")
+    // {
+    //     calibrateStatus = "false";
+    // }
+    // if (calibrateStatus == "true")
+    // {
+    //     targetPos = currentPos;
+    //     shade = (int)(100.0 * targetPos / shadeLenght);
+    // }
+
+    // shadeDoc["shade"] = shade;
+    // shadeDoc["targetPos"] = targetPos;
+    // shadeDoc["currentPos"] = currentPos;
+    // shadeDoc["moveStatus"] = moveStatus;
+    // shadeDoc["calibrateStatus"] = calibrateStatus;
+
+    // Serial.println("Saving to file on stop...");
+    // writeJsonFile(SPIFFS, shadePath, shadeDoc);
+    // serializeJson(shadeDoc, jsonBuf);
+    // if (mqttClient.publish(mqttTopicStatus, jsonBuf, false))
+    //     Serial.println("Publish status topic success");
+    // else
+    //     Serial.println("Failed to publish status topic");
 }
 
 void onShade(int shade)
 {
     char *tag = "on_shade";
-    ESP_LOGI(tag, "SHADE [%d] message received", shade);
+    ESP_LOGW(tag, "SHADE [%d] message received", shade);
+
+    // Serial.println("onShade function");
+
+    // if (calibrateStatus == "true")
+    // {
+    //     Serial.println("New shade: " + String(shade));
+    //     targetPos = (int)(shadeLenght * shade / 100.0);
+    //     if (currentPos < targetPos)
+    //     {
+    //         moveStatus = "closing";
+    //         targetFlag = false;
+    //     }
+    //     if (currentPos > targetPos)
+    //     {
+    //         moveStatus = "opening";
+    //         targetFlag = false;
+    //     }
+    //     if (currentPos == targetPos)
+    //     {
+    //         moveStatus = "stopped";
+    //     }
+    // }
+    // else
+    // {
+    //     Serial.println(" - moving error. Shade is not calibrated");
+    //     moveStatus = "stopped";
+    // }
+
+    // shadeDoc["shade"] = shade;
+    // shadeDoc["targetPos"] = targetPos;
+    // shadeDoc["currentPos"] = currentPos;
+    // shadeDoc["moveStatus"] = moveStatus;
+    // shadeDoc["calibrateStatus"] = calibrateStatus;
+    // serializeJson(shadeDoc, jsonBuf);
+    // if (mqttClient.publish(mqttTopicStatus, jsonBuf, false))
+    //     Serial.println("Publish shade topic success");
+    // else
+    //     Serial.println("Failed to publish shade topic");
 }
 
 void time_sync_start(const char *tz)
@@ -593,6 +695,9 @@ void openweather_api_task(void *pvParameters)
         .url = open_weather_map_url,
         .method = HTTP_METHOD_GET,
         .event_handler = http_event_handler,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        // .cert_pem = (char *)server_cert_pem_start,
+
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -744,9 +849,9 @@ static void smartconfig_task(void *param)
         {
             ESP_LOGI("smartconfig_task", "Smartconfig is done");
             ESP_ERROR_CHECK(esp_smartconfig_stop());
-            vTaskDelete(NULL);
         }
     }
+    vTaskDelete(NULL);
 }
 
 /* Задача обновления через WiFi */
@@ -871,6 +976,51 @@ void timer_cb(TimerHandle_t pxTimer)
     }
 }
 
+// Задача моргания светодиодом
+void led_blink_task(void *vParam)
+{
+    gpio_set_direction(LED_STATUS, GPIO_MODE_OUTPUT);
+    gpio_set_pull_mode(LED_STATUS, GPIO_FLOATING);
+
+    while (1)
+    {
+        gpio_set_level(LED_STATUS, 1);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        gpio_set_level(LED_STATUS, 0);
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    vTaskDelete(NULL);
+}
+
+void move_up_task(void *vParam)
+{
+    gpio_set_direction(SM_DIR, GPIO_MODE_OUTPUT);
+    gpio_set_direction(SM_nEN, GPIO_MODE_OUTPUT);
+    gpio_set_direction(SM_STEP, GPIO_MODE_OUTPUT);
+    gpio_set_direction(LED_STATUS, GPIO_MODE_OUTPUT);
+
+    gpio_set_pull_mode(SM_DIR, GPIO_FLOATING);
+    gpio_set_pull_mode(SM_nEN, GPIO_FLOATING);
+    gpio_set_pull_mode(SM_STEP, GPIO_FLOATING);
+    gpio_set_pull_mode(LED_STATUS, GPIO_FLOATING);
+
+    gpio_set_level(SM_nEN, 0);
+    gpio_set_level(SM_DIR, 0);
+
+    while (1)
+    {
+        gpio_set_level(SM_STEP, 1);
+        gpio_set_level(LED_STATUS, 1);
+//        vTaskDelay(pdMS_TO_TICKS(10));
+        ets_delay_us(1000);
+        gpio_set_level(SM_STEP, 0);
+        gpio_set_level(LED_STATUS, 0);
+        ets_delay_us(1000);
+//        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    vTaskDelete(NULL);
+}
+
 void app_main(void)
 {
     char *tag = "main";
@@ -961,22 +1111,25 @@ void app_main(void)
         _status.onSunset = 0;
     }
 
-    // /*
-    // char ssid[32] = "mywifi";
-    // char pass[32] = "mypass123";
-    // memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
-    // memcpy(wifi_config.sta.password, pass, sizeof(wifi_config.sta.ssid));
-    // password_loaded = true;
-    // ssid_loaded = true;
-    // */
+    /*
+    char ssid[32] = "mywifi";
+    char pass[32] = "mypass123";
+    memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
+    memcpy(wifi_config.sta.password, pass, sizeof(wifi_config.sta.ssid));
+    password_loaded = true;
+    ssid_loaded = true;
+    */
 
     wifi_init();
 
-    // Создаем программный таймер с периодоим 1 секунда
+    // Создаем программный таймер с периодом 1 секунда
     _timer = xTimerCreate(
         "Timer",
         pdMS_TO_TICKS(1000),
         pdTRUE,
         NULL,
         timer_cb);
+
+    //    xTaskCreate(led_blink_task, "led_blink_task", 4096, NULL, 3, NULL);
+    xTaskCreate(move_up_task, "move_up_task", 4096, NULL, 3, NULL);
 }
