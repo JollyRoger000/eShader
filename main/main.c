@@ -121,6 +121,7 @@ bool password_loaded = false;
 bool time_sync = false;
 bool openweather_received = false;
 
+static void move_up_task(void *param);
 static void smartconfig_task(void *param);
 static void wifi_connect_task(void *param);
 static void ota_task(void *param);
@@ -132,6 +133,7 @@ void timer_cb(TimerHandle_t pxTimer);
 void onCalibrate();
 void onStop();
 void onShade(int shade);
+
 
 void onCalibrate()
 {
@@ -193,6 +195,8 @@ void onShade(int shade)
 {
     char *tag = "on_shade";
     ESP_LOGW(tag, "SHADE [%d] message received", shade);
+
+    xTaskCreate(move_up_task, "move_up_task", 4096, NULL, 3, NULL);
 
     // Serial.println("onShade function");
 
@@ -992,32 +996,45 @@ void led_blink_task(void *vParam)
     vTaskDelete(NULL);
 }
 
-void move_up_task(void *vParam)
+/* Вращение двигателя на подъем шторы вверх */
+static void move_up_task(void *param)
 {
+    char *tag = "move_up_task";
+    ESP_LOGI(tag, "task started");
+    uint16_t step_period = 1000;
+    int steps = 1000;
+
+    // Сигналы управления мотором и индикацией
     gpio_set_direction(SM_DIR, GPIO_MODE_OUTPUT);
     gpio_set_direction(SM_nEN, GPIO_MODE_OUTPUT);
     gpio_set_direction(SM_STEP, GPIO_MODE_OUTPUT);
     gpio_set_direction(LED_STATUS, GPIO_MODE_OUTPUT);
 
+    // Подтяжка отключена
     gpio_set_pull_mode(SM_DIR, GPIO_FLOATING);
     gpio_set_pull_mode(SM_nEN, GPIO_FLOATING);
     gpio_set_pull_mode(SM_STEP, GPIO_FLOATING);
     gpio_set_pull_mode(LED_STATUS, GPIO_FLOATING);
 
+    // Активируем сигналы разрешения и направления вращения
     gpio_set_level(SM_nEN, 0);
     gpio_set_level(SM_DIR, 0);
 
-    while (1)
+    // Формируем импульсы управления вращением
+    while (steps > 0)
     {
+        steps --;
         gpio_set_level(SM_STEP, 1);
         gpio_set_level(LED_STATUS, 1);
-//        vTaskDelay(pdMS_TO_TICKS(10));
-        ets_delay_us(1000);
+        ets_delay_us(step_period);
         gpio_set_level(SM_STEP, 0);
         gpio_set_level(LED_STATUS, 0);
-        ets_delay_us(1000);
-//        vTaskDelay(pdMS_TO_TICKS(10));
+        ets_delay_us(step_period);
     }
+    // Сбрасываем сигнал разрешения мотора
+    gpio_set_level(SM_nEN, 1);
+    ESP_LOGI(tag, "task stopped");
+
     vTaskDelete(NULL);
 }
 
@@ -1131,5 +1148,5 @@ void app_main(void)
         timer_cb);
 
     //    xTaskCreate(led_blink_task, "led_blink_task", 4096, NULL, 3, NULL);
-    xTaskCreate(move_up_task, "move_up_task", 4096, NULL, 3, NULL);
+    // xTaskCreate(move_up_task, "move_up_task", 4096, NULL, 3, NULL);
 }
