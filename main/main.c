@@ -578,7 +578,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         char topic[50];
         char data[500];
 
-        snprintf(topic, sizeof(topic), "%s", event->topic);
+        snprintf(topic, event->topic_len + 1, "%s", event->topic);
         snprintf(data, event->data_len + 1, "%s", event->data);
 
         printf("topic= %s\n", topic);
@@ -1220,6 +1220,16 @@ void calibrate_task(void *param)
     ESP_LOGE(tag, "Task stopped. System is not calibrated. Stepout: %d steps", calibrateCnt);
     _status.cal_status = 0;
     strcpy(_status.move_status, "stopped");
+
+    // Публикуем новый статус
+    char *status = mqttStatusJson(_status);
+    ESP_LOGI(tag, "New status string: %s", status);
+    if (mqttConnected)
+    {
+        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
+        ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
+    }
+    free(status);
 
     vTaskDelete(NULL);
 }
