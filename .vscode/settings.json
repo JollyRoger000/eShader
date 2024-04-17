@@ -20,6 +20,7 @@
     "string.h": "c",
     "bitset": "c",
     "string_view": "c",
-    "regex": "c"
+    "regex": "c",
+    "esp_task_wdt.h": "c"
   }
 }
