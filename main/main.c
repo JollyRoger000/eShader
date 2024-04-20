@@ -142,6 +142,7 @@ typedef struct
     char tg_key[100];
     char city[50];
     char country_code[5];
+    char update_url[100];
 } SystemStruct;
 
 SystemStruct _system = {
@@ -150,6 +151,7 @@ SystemStruct _system = {
     .city = "Moscow",
     .country_code = "RU",
     .tg_key = TG_KEY_DEFAULT,
+    .update_url = "https://cs49635.tw1.ru/eShader/updates/eShader.bin",
 };
 
 static EventGroupHandle_t s_wifi_event_group; // Группа событий
@@ -177,6 +179,7 @@ static void mqtt_start(void);
 void time_sync_start(const char *tz);
 void time_sync_cb(struct timeval *tv);
 void timer_cb(TimerHandle_t pxTimer);
+static esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client);
 void onCalibrate();
 void onStop();
 void onShade(int shade);
@@ -310,8 +313,6 @@ void time_sync_start(const char *tz)
 /* Функция преобразования структуры статуса в json строку*/
 char *mqttStatusJson(StatusStruct s)
 {
-    char *tag = "mqttStatusJson";
-
     cJSON *json = cJSON_CreateObject();
 
     cJSON_AddStringToObject(json, "sunrise", s.str_sunrise);
@@ -321,10 +322,10 @@ char *mqttStatusJson(StatusStruct s)
     cJSON_AddNumberToObject(json, "shadeSunset", s.shadeSunset);
     cJSON_AddNumberToObject(json, "onSunrise", s.onSunrise);
     cJSON_AddNumberToObject(json, "onSunset", s.onSunset);
+    cJSON_AddNumberToObject(json, "cal_status", s.cal_status);
     cJSON_AddNumberToObject(json, "length", s.length);
     cJSON_AddNumberToObject(json, "shade", s.shade);
     cJSON_AddStringToObject(json, "move_status", s.move_status);
-    cJSON_AddNumberToObject(json, "cal_status", s.cal_status);
     cJSON_AddNumberToObject(json, "target_pos", s.target_pos);
     cJSON_AddNumberToObject(json, "current_pos", s.current_pos);
 
@@ -337,14 +338,13 @@ char *mqttStatusJson(StatusStruct s)
 /* Функция преобразования структуры параметров системы в json строку*/
 char *mqttSystemJson(SystemStruct s)
 {
-    char *tag = "mqttSystemJson";
-
     cJSON *json = cJSON_CreateObject();
 
     cJSON_AddStringToObject(json, "country", s.country_code);
     cJSON_AddStringToObject(json, "city", s.city);
     cJSON_AddStringToObject(json, "ow_key", s.ow_key);
     cJSON_AddStringToObject(json, "tg_key", s.tg_key);
+    cJSON_AddStringToObject(json, "update_url", s.update_url);
     cJSON_AddNumberToObject(json, "max_steps", s.max_steps);
 
     char *string = cJSON_Print(json);
@@ -539,6 +539,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
         msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemMaxSteps, mqttTopicSystemMaxStepsQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemMaxSteps, msg_id);
+
+        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemUpdate, mqttTopicSystemUpdateQoS);
+        ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemUpdate, msg_id);
 
         break;
 
@@ -767,6 +770,30 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             }
         }
 
+        // Если пришел запрос на обновление прошивки по ota
+        if (!strcmp(topic, mqttTopicSystemUpdate))
+        {
+            ESP_LOGW(tag, "Firmware update topic received: %s", data);
+
+            strcpy(_system.update_url, data);
+
+            // Преобразуем структуру в строку json и публикуем
+            char *str = mqttSystemJson(_system);
+            ESP_LOGI(tag, "System data: %s", str);
+            if (mqttConnected)
+            {
+                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
+                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
+            }
+
+            // Все выключаем
+            xTimerStop(_timer, 0);
+            // vTaskSuspend(move_task_handle);
+            // vTaskSuspend(calibrate_task_handle);
+            // Запускаем обновление
+            xTaskCreate(&ota_task, "ota_task", 4096, NULL, 3, NULL);
+        }
+
         break;
 
     case MQTT_EVENT_ERROR:
@@ -780,157 +807,157 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 }
 
 /* Функция обработчик событий WiFi, IP, SC (SmartConfig) */
-static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
-    // switch (event_id)
-    // {
-    // case WIFI_EVENT_STA_START:
-    //     if (ssid_loaded && password_loaded)
-    //     {
-    //         xTaskCreate(wifi_connect_task, "wifi_connect_task", 4096, NULL, 3, NULL);
-    //     }
-    //     else
-    //     {
-    //         xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 3, NULL);
-    //     }
-    //     break;
-    // case WIFI_EVENT_STA_DISCONNECTED:
-    //     if (s_retry_num < ESP_MAX_RETRY)
-    //     {
-    //         esp_wifi_connect();
-    //         s_retry_num++;
-    //         ESP_LOGI("wifi_event_handler", "Retry to connect to the AP");
-    //     }
-    //     else
-    //     {
-    //         xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-    //     }
-    //     ESP_LOGE("wifi_event_handler", "Connect to the AP fail");
-    //     break;
-    // case IP_EVENT_STA_GOT_IPIP_EVENT_STA_GOT_IP:
+    const char *tag = "event_handler";
 
-    //  default:
-    //     break;
-    // }
-    /* Режим работы STA */
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
+    if (event_base == ESP_HTTPS_OTA_EVENT)
     {
-        /* Если ssid и pass прорчитаны из NVS запускаем задачу подключения к сети
-         * в противном случае запускаем задачу конфигурации с помощью smart config */
-        if (ssid_loaded && password_loaded)
+        switch (event_id)
         {
-            xTaskCreate(wifi_connect_task, "wifi_connect_task", 4096, NULL, 3, NULL);
-        }
-        else
-        {
-            xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 3, NULL);
+        case ESP_HTTPS_OTA_START:
+            ESP_LOGI(tag, "OTA started");
+            break;
+        case ESP_HTTPS_OTA_CONNECTED:
+            ESP_LOGI(tag, "Connected to server");
+            break;
+        case ESP_HTTPS_OTA_GET_IMG_DESC:
+            ESP_LOGI(tag, "Reading Image Description");
+            break;
+        case ESP_HTTPS_OTA_VERIFY_CHIP_ID:
+            ESP_LOGI(tag, "Verifying chip id of new image: %d", *(esp_chip_id_t *)event_data);
+            break;
+        case ESP_HTTPS_OTA_DECRYPT_CB:
+            ESP_LOGI(tag, "Callback to decrypt function");
+            break;
+        case ESP_HTTPS_OTA_WRITE_FLASH:
+            ESP_LOGD(tag, "Writing to flash: %d written", *(int *)event_data);
+            break;
+        case ESP_HTTPS_OTA_UPDATE_BOOT_PARTITION:
+            ESP_LOGI(tag, "Boot partition updated. Next Partition: %d", *(esp_partition_subtype_t *)event_data);
+            break;
+        case ESP_HTTPS_OTA_FINISH:
+            ESP_LOGI(tag, "OTA finish");
+            break;
+        case ESP_HTTPS_OTA_ABORT:
+            ESP_LOGI(tag, "OTA abort");
+            break;
         }
     }
-    /* Соединение прервано */
-    else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
+
+    if (event_base == WIFI_EVENT)
     {
-        if (s_retry_num < ESP_MAX_RETRY)
+        switch (event_id)
         {
-            esp_wifi_connect();
-            s_retry_num++;
-            ESP_LOGI("wifi_event_handler", "Retry to connect to the AP");
-        }
-        else
-        {
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-        }
-        ESP_LOGE("wifi_event_handler", "Connect to the AP fail");
-    }
-    /* Если подключение успешно и получен IP адрес*/
-    else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
-    {
-        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI("wifi_event_handler", "Connection success. IP addr: " IPSTR, IP2STR(&event->ip_info.ip));
-        s_retry_num = 0;
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-
-        // Запускаем синхронизацию времени
-        time_sync_start("MSK-3");
-    }
-    /* smartconfig завершил сканирование точек доступа */
-    else if (event_base == SC_EVENT && event_id == SC_EVENT_SCAN_DONE)
-    {
-        ESP_LOGI("wifi_event_handler", "Smartconfig scan is done");
-    }
-    /* smartconfig нашел канал целевой точки доступа */
-    else if (event_base == SC_EVENT && event_id == SC_EVENT_FOUND_CHANNEL)
-    {
-        ESP_LOGI("wifi_event_handler", "Smartconfig find channel");
-    }
-    /* smartconfig получил имя сети SSID и пароль */
-    else if (event_base == SC_EVENT && event_id == SC_EVENT_GOT_SSID_PSWD)
-    {
-        smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
-
-        char ssid[33] = {0};
-        char password[65] = {0};
-        uint8_t rvd_data[33] = {0};
-
-        bzero(&wifi_config, sizeof(wifi_config_t));
-        /* Копируем полученное имя сети в структуру wifi_config */
-        memcpy(wifi_config.sta.ssid, evt->ssid, sizeof(wifi_config.sta.ssid));
-        /* Копируем полученный пароль в структуру wifi_config  */
-        memcpy(wifi_config.sta.password, evt->password, sizeof(wifi_config.sta.password));
-        wifi_config.sta.bssid_set = evt->bssid_set;
-        if (wifi_config.sta.bssid_set == true)
-        {
-            memcpy(wifi_config.sta.bssid, evt->bssid, sizeof(wifi_config.sta.bssid));
-        }
-
-        memcpy(ssid, evt->ssid, sizeof(evt->ssid));
-        memcpy(password, evt->password, sizeof(evt->password));
-        nvs_write_str("ssid", ssid);
-        nvs_write_str("pass", password);
-        ESP_LOGI("wifi_event_handler", "Smartconfig got SSID and password. SSID: %s Pass: %s", ssid, password);
-
-        // nvs_handle_t my_handle;
-        // esp_err_t err;
-        // /* Открываем NVS для записи*/
-        // ESP_LOGI("wifi_event_handler", "Opening Non-Volatile Storage (NVS) handle... ");
-        // err = nvs_open("storage", NVS_READWRITE, &my_handle);
-        // if (err != ESP_OK)
-        // {
-        //     ESP_LOGE("wifi_event_handler", "Error (%s) opening NVS handle!", esp_err_to_name(err));
-        // }
-        // else
-        // {
-        //     ESP_LOGI("wifi_event_handler", "NVC handle open success");
-        //     ESP_LOGI("wifi_event_handler", "Saving data to NVC");
-        //     /* Сохраняем данные в памяти */
-        //     ESP_ERROR_CHECK(nvs_set_str(my_handle, "ssid", ssid));
-
-        //     /* Коммитим изменения */
-        //     ESP_LOGI("wifi_event_handler", "NVC commiting...");
-        //     ESP_ERROR_CHECK(nvs_commit(my_handle));
-
-        //     /* Закрываем указатель */
-        //     nvs_close(my_handle);
-        //}
-        if (evt->type == SC_TYPE_ESPTOUCH_V2)
-        {
-            ESP_ERROR_CHECK(esp_smartconfig_get_rvd_data(rvd_data, sizeof(rvd_data)));
-            ESP_LOGI("wifi_event_handler", "RVD_DATA:");
-            for (int i = 0; i < 33; i++)
+        /* Режим работы STA */
+        case WIFI_EVENT_STA_START:
+            /* Если ssid и pass прорчитаны из NVS запускаем задачу подключения к сети
+             * в противном случае запускаем задачу конфигурации с помощью smart config */
+            if (ssid_loaded && password_loaded)
             {
-                printf("%02x ", rvd_data[i]);
+                xTaskCreate(wifi_connect_task, "wifi_connect_task", 4096, NULL, 3, NULL);
             }
-            printf("\n");
+            else
+            {
+                xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 3, NULL);
+            }
+            break;
+        
+        /* Соединение прервано */
+        case WIFI_EVENT_STA_DISCONNECTED:
+            if (s_retry_num < ESP_MAX_RETRY)
+            {
+                esp_wifi_connect();
+                s_retry_num++;
+                ESP_LOGI(tag, "Retry to connect to the AP");
+            }
+            else
+            {
+                xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            }
+            ESP_LOGE(tag, "Connect to the AP fail");
+            break;
         }
-
-        ESP_ERROR_CHECK(esp_wifi_disconnect());
-        /* Создаем подключение с принятыми данными */
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-        esp_wifi_connect();
     }
-    /* smartconfig отправил ACK на телефон */
-    else if (event_base == SC_EVENT && event_id == SC_EVENT_SEND_ACK_DONE)
+
+    if (event_base == IP_EVENT)
     {
-        xEventGroupSetBits(s_wifi_event_group, ESPTOUCH_DONE_BIT);
+        switch (event_id)
+        {
+        /* Если подключение успешно и получен IP адрес*/
+        case IP_EVENT_STA_GOT_IP:
+            ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+            ESP_LOGI(tag, "Connection success. IP addr: " IPSTR, IP2STR(&event->ip_info.ip));
+            s_retry_num = 0;
+            xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+
+            // Запускаем синхронизацию времени
+            time_sync_start("MSK-3");
+            break;
+        }
+    }
+
+    if (event_base == SC_EVENT)
+    {
+        switch (event_id)
+        {
+        /* smartconfig завершил сканирование точек доступа */
+        case SC_EVENT_SCAN_DONE:
+            ESP_LOGI(tag, "Smartconfig scan is done");
+            break;
+
+        /* smartconfig нашел канал целевой точки доступа */
+        case SC_EVENT_FOUND_CHANNEL:
+            ESP_LOGI(tag, "Smartconfig find channel");
+            break;
+
+        /* smartconfig получил имя сети SSID и пароль */
+        case SC_EVENT_GOT_SSID_PSWD:
+            smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
+
+            char ssid[33] = {0};
+            char password[65] = {0};
+            uint8_t rvd_data[33] = {0};
+
+            bzero(&wifi_config, sizeof(wifi_config_t));
+            /* Копируем полученное имя сети в структуру wifi_config */
+            memcpy(wifi_config.sta.ssid, evt->ssid, sizeof(wifi_config.sta.ssid));
+            /* Копируем полученный пароль в структуру wifi_config  */
+            memcpy(wifi_config.sta.password, evt->password, sizeof(wifi_config.sta.password));
+            wifi_config.sta.bssid_set = evt->bssid_set;
+            if (wifi_config.sta.bssid_set == true)
+            {
+                memcpy(wifi_config.sta.bssid, evt->bssid, sizeof(wifi_config.sta.bssid));
+            }
+
+            memcpy(ssid, evt->ssid, sizeof(evt->ssid));
+            memcpy(password, evt->password, sizeof(evt->password));
+            nvs_write_str("ssid", ssid);
+            nvs_write_str("pass", password);
+            ESP_LOGI(tag, "Smartconfig got SSID and password. SSID: %s Pass: %s", ssid, password);
+
+            if (evt->type == SC_TYPE_ESPTOUCH_V2)
+            {
+                ESP_ERROR_CHECK(esp_smartconfig_get_rvd_data(rvd_data, sizeof(rvd_data)));
+                ESP_LOGI(tag, "RVD_DATA:");
+                for (int i = 0; i < 33; i++)
+                {
+                    printf("%02x ", rvd_data[i]);
+                }
+                printf("\n");
+            }
+
+            ESP_ERROR_CHECK(esp_wifi_disconnect());
+            /* Создаем подключение с принятыми данными */
+            ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+            esp_wifi_connect();
+            break;
+
+        /* smartconfig отправил ACK на телефон */
+        case SC_EVENT_SEND_ACK_DONE:
+            xEventGroupSetBits(s_wifi_event_group, ESPTOUCH_DONE_BIT);
+            break;
+        }
     }
 }
 
@@ -1084,9 +1111,10 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
     /* Регистрируем события в функции обработчике */
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(ESP_HTTPS_OTA_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
 
     /* Переводим ESP в режим STA и запускаем WiFi*/
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
@@ -1116,36 +1144,133 @@ static void smartconfig_task(void *param)
     vTaskDelete(NULL);
 }
 
+static esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
+{
+    const char *tag = "validate_image_header";
+    if (new_app_info == NULL)
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_app_desc_t running_app_info;
+    if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK)
+    {
+        ESP_LOGI(tag, "Running firmware version: %s", running_app_info.version);
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client)
+{
+    esp_err_t err = ESP_OK;
+    /* Uncomment to add custom headers to HTTP request */
+    // err = esp_http_client_set_header(http_client, "Custom-Header", "Value");
+    return err;
+}
+
 /* Задача обновления через WiFi */
 static void ota_task(void *param)
 {
+    const char *tag = "ota_task";
+    esp_err_t ota_finish_err = ESP_OK;
+
     esp_wifi_set_ps(WIFI_PS_NONE);
     esp_http_client_config_t config = {
-        .url = "https://cs49635.tw1.ru/simple_ota.bin",
-        .use_global_ca_store = true,
+        .url = _system.update_url,
+        .use_global_ca_store = false,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+
     };
 
     esp_https_ota_config_t ota_config = {
         .http_config = &config,
+        .http_client_init_cb = _http_client_init_cb, // Register a callback to be invoked after esp_http_client is initialized
     };
 
-    ESP_LOGI("ota_task", "Starting OTA firmware update from %s", config.url);
+    ESP_LOGI(tag, "Starting OTA firmware update from %s", config.url);
 
-    esp_err_t ret = esp_https_ota(&ota_config);
-    if (ret == ESP_OK)
+    esp_https_ota_handle_t https_ota_handle = NULL;
+    esp_err_t err = esp_https_ota_begin(&ota_config, &https_ota_handle);
+    if (err != ESP_OK)
     {
-        ESP_LOGI("ota_task", "OTA Succeed, Rebooting...");
-        esp_restart();
+        ESP_LOGE(tag, "ESP HTTPS OTA Begin failed");
+        vTaskDelete(NULL);
+    }
+
+    esp_app_desc_t app_desc;
+    err = esp_https_ota_get_img_desc(https_ota_handle, &app_desc);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(tag, "esp_https_ota_read_img_desc failed");
+        goto ota_end;
+    }
+    err = validate_image_header(&app_desc);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(tag, "image header verification failed");
+        goto ota_end;
+    }
+
+    while (1)
+    {
+        err = esp_https_ota_perform(https_ota_handle);
+        if (err != ESP_ERR_HTTPS_OTA_IN_PROGRESS)
+        {
+            break;
+        }
+        // esp_https_ota_perform returns after every read operation which gives user the ability to
+        // monitor the status of OTA upgrade by calling esp_https_ota_get_image_len_read, which gives length of image
+        // data read so far.
+        ESP_LOGD(tag, "Image bytes read: %d", esp_https_ota_get_image_len_read(https_ota_handle));
+    }
+
+    if (esp_https_ota_is_complete_data_received(https_ota_handle) != true)
+    {
+        // the OTA image was not completely received and user can customise the response to this situation.
+        ESP_LOGE(tag, "Complete data was not received.");
     }
     else
     {
-        ESP_LOGE("ota_task", "Firmware upgrade failed");
+        ota_finish_err = esp_https_ota_finish(https_ota_handle);
+        if ((err == ESP_OK) && (ota_finish_err == ESP_OK))
+        {
+            ESP_LOGI(tag, "ESP_HTTPS_OTA upgrade successful. Rebooting ...");
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+            esp_restart();
+        }
+        else
+        {
+            if (ota_finish_err == ESP_ERR_OTA_VALIDATE_FAILED)
+            {
+                ESP_LOGE(tag, "Image validation failed, image is corrupted");
+            }
+            ESP_LOGE(tag, "ESP_HTTPS_OTA upgrade failed 0x%x", ota_finish_err);
+            vTaskDelete(NULL);
+        }
     }
-    while (1)
-    {
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-    }
+
+ota_end:
+    esp_https_ota_abort(https_ota_handle);
+    ESP_LOGE(tag, "ESP_HTTPS_OTA upgrade failed");
     vTaskDelete(NULL);
+
+    // esp_err_t ret = esp_https_ota(&ota_config);
+    // if (ret == ESP_OK)
+    // {
+    //     ESP_LOGI(tag, "OTA Succeed, Rebooting...");
+    //     esp_restart();
+    // }
+    // else
+    // {
+    //     ESP_LOGE(tag, "Firmware upgrade failed");
+
+    //     // Запускаем таймер заново
+    //     xTimerStart(_timer, 0);
+    // }
+
+    // vTaskDelete(NULL);
 }
 
 /* Задача подключения к WiFi */
@@ -1237,11 +1362,6 @@ void timer_cb(TimerHandle_t pxTimer)
             _status.shade = _status.shadeSunset;
             xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
         }
-
-        // if (tm_now->tm_hour == 16 && tm_now->tm_min == 13 && tm_now->tm_sec == 0)
-        // {
-        //     xTaskCreate(&ota_task, "ota_task", 4096, NULL, 3, NULL);
-        // }
     }
     else
     {
@@ -1596,14 +1716,14 @@ void app_main(void)
         _status.onSunset = 0;
     }
 
-    ///*
+    /*
     char ssid[32] = "mywifi";
     char pass[32] = "mypass123";
     memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
     memcpy(wifi_config.sta.password, pass, sizeof(wifi_config.sta.ssid));
     password_loaded = true;
     ssid_loaded = true;
-    //*/
+    */
 
     wifi_init();
 
