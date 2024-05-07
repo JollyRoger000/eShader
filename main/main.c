@@ -25,7 +25,7 @@
 #define SM_nEN 18
 #define SW 22
 #define LED_STATUS 23
-#define INIT_RESET_BTN 13
+#define SERVICE_BTN 13
 
 #define WEB_SERVER "https://api.telegram.org"
 #define WEB_PORT "443"
@@ -34,17 +34,15 @@
 #define OW_KEY_DEFAULT "19fcdfb788eed5e53824116dc41ebe90"
 #define TG_KEY_DEFAULT "7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM"
 
-TimerHandle_t _timer = NULL;
-static const int ESP_MAX_RETRY = 5;
-static const int WIFI_CONNECTED_BIT = BIT0; // Бит успешного подключения к сети
-static const int WIFI_FAIL_BIT = BIT1;      // Бит ошибки подключения (выставляется при ошибке подключения ESP_MAX_RETRY раз)
-static const int ESPTOUCH_DONE_BIT = BIT2;  // Бит успешной отправки команды ESPTOUCH_DONE на смартфон
+#define WIFI_START_BIT BIT0 // Бит запуска подключения к WiFi
+#define WIFI_DONE_BIT BIT1  // Бит успешного подключения к WiFi
+#define WIFI_FAIL_BIT BIT2  // Бит ошибки подключения (выставляется при ошибке подключения заданное число раз)
+#define SC_START_BIT BIT3   // Бит запуска smartconfig
+#define SC_DONE_BIT BIT4    // Бит успешнго завершения smartconfig
+#define SC_FOUND_BIT BIT5   // Бит обнаружения смартфона SC
+#define REINIT_BIT BIT6     // Бит переинициализации системы
 
 char *openweather_data = NULL;
-size_t openweather_len = 0;
-
-esp_mqtt_client_handle_t mqttClient;
-
 char mqttHostname[32];
 const int mqttPort = 15476;
 const char *mqttServer = "mqtt://m9.wqtt.ru";
@@ -73,20 +71,20 @@ char mqttTopicSystemOWKey[50];
 
 char mqttStatusStr[200];
 
-int mqttTopicStatusQoS = 1;
-int mqttTopicCheckOnlineQoS = 1;
-int mqttTopicControlQoS = 1;
-int mqttTopicTimersQoS = 1;
-int mqttTopicAddTimerQoS = 1;
-int mqttTopicAddSunriseQoS = 1;
-int mqttTopicAddSunsetQoS = 1;
-int mqttTopicDelSunriseQoS = 1;
-int mqttTopicDelSunsetQoS = 1;
-int mqttTopicSystemQoS = 1;
-int mqttTopicSystemUpdateQoS = 1;
-int mqttTopicSystemMaxStepsQoS = 1;
-int mqttTopicSystemTGKeyQoS = 1;
-int mqttTopicSystemOWKeyQoS = 1;
+int mqttTopicStatusQoS = 0;
+int mqttTopicCheckOnlineQoS = 0;
+int mqttTopicControlQoS = 0;
+int mqttTopicTimersQoS = 0;
+int mqttTopicAddTimerQoS = 0;
+int mqttTopicAddSunriseQoS = 0;
+int mqttTopicAddSunsetQoS = 0;
+int mqttTopicDelSunriseQoS = 0;
+int mqttTopicDelSunsetQoS = 0;
+int mqttTopicSystemQoS = 0;
+int mqttTopicSystemUpdateQoS = 0;
+int mqttTopicSystemMaxStepsQoS = 0;
+int mqttTopicSystemTGKeyQoS = 0;
+int mqttTopicSystemOWKeyQoS = 0;
 
 int mqttTopicStatusRet = 1;
 int mqttTopicCheckOnlinetRet = 1;
@@ -101,7 +99,7 @@ int mqttTopicSystemRet = 1;
 int mqttTopicSystemUpdateRet = 1;
 int mqttTopicSystemMaxStepsRet = 1;
 int mqttTopicSystemTGKeyRet = 1;
-int mqttTopicSystemOWKeyRet = 1;
+int mqttTopicSystemOWKeyRet = 0;
 
 typedef struct
 {
@@ -154,12 +152,18 @@ SystemStruct _system = {
     .update_url = "https://cs49635.tw1.ru/eShader/updates/eShader.bin",
 };
 
-static EventGroupHandle_t s_wifi_event_group; // Группа событий
-wifi_config_t wifi_config;                    // Структура для хранения настроек WIFI
+EventGroupHandle_t event_group; // Группа событий
 TaskHandle_t calibrate_task_handle;
 TaskHandle_t move_task_handle;
+TimerHandle_t _timer = NULL;
+esp_mqtt_client_handle_t mqttClient;
+wifi_config_t wifi_config; // Структура для хранения настроек WIFI
 
-int s_retry_num = 0;
+size_t openweather_len = 0;
+
+int connect_retry = 0;
+int max_connect_retry = 5;
+int timer = 0;
 
 uint16_t max_steps = 30000;
 uint16_t calibrateCnt = 0;
@@ -171,27 +175,34 @@ bool targetFlag = false;
 bool ssid_loaded = false;
 bool password_loaded = false;
 bool time_sync = false;
-bool openweather_received = false;
 bool mqttConnected = false;
+bool owConnected = false;
 
-void get_sunrise_sunset(const char *json_string);
-static void mqtt_start(void);
+void mqtt_start(void);
 void time_sync_start(const char *tz);
 void time_sync_cb(struct timeval *tv);
 void timer_cb(TimerHandle_t pxTimer);
-static esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client);
 void onCalibrate();
 void onStop();
 void onShade(int shade);
 void move_task(void *param);
 void calibrate_task(void *param);
-static void smartconfig_task(void *param);
-static void wifi_connect_task(void *param);
-static void ota_task(void *param);
+void smartconfig_task(void *param);
+void openweather_task(void *param);
+void wifi_connect_task(void *param);
+void ota_task(void *param);
+void led_task(void *param);
+void init_btn_task(void *param);
 char *mqttStatusJson(StatusStruct status);
 char *mqttSystemJson(SystemStruct status);
+bool get_sunrise_sunset(const char *json_string);
 esp_err_t nvs_write_u8(char *key, uint8_t val);
 esp_err_t nvs_write_u16(char *key, uint16_t val);
+esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client);
+void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+void ota_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 
 // Функция калибровки длины шторы
 void onCalibrate()
@@ -461,20 +472,25 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
 
     case HTTP_EVENT_ON_FINISH:
         ESP_LOGI(tag, "OpenWeatherAPI received data: %s", openweather_data);
-        openweather_received = true;
 
         /* Выделяем из ответа время заката/восхода, преобразуем в JSON и публикуем */
-        get_sunrise_sunset(openweather_data);
-        char *status = mqttStatusJson(_status);
-        ESP_LOGI(tag, "New status string: %s", status);
-        /* Публикуем новый статус */
-        if (mqttConnected)
+        if (get_sunrise_sunset(openweather_data))
         {
-            int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-            ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
+            char *status = mqttStatusJson(_status);
+            ESP_LOGI(tag, "New status string: %s", status);
+            /* Публикуем новый статус */
+            if (mqttConnected)
+            {
+                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
+                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
+            }
+            free(status);
+            free(openweather_data);
         }
-        free(status);
-        free(openweather_data);
+        else
+        {
+            ESP_LOGE(tag, "get_sunrise_sunset error");
+        }
         break;
 
     default:
@@ -484,7 +500,7 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
 }
 
 /* Функция обработчик сообщений MQTT */
-static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
+void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     char *tag = "mqtt_event";
     // ESP_LOGI(tag, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
@@ -499,6 +515,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(tag, "MQTT_EVENT_CONNECTED");
+
         mqttConnected = true;
         // Публикуем состояние и подписываемся на топики
         msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicCheckOnline, "online", 0, mqttTopicCheckOnlineQoS, mqttTopicCheckOnlinetRet);
@@ -528,8 +545,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicDelSunset, mqttTopicDelSunsetQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicDelSunset, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystem, mqttTopicSystemQoS);
-        ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystem, msg_id);
+        // msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystem, mqttTopicSystemQoS);
+        // ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystem, msg_id);
 
         msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemOWKey, mqttTopicSystemOWKeyQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemOWKey, msg_id);
@@ -548,6 +565,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     case MQTT_EVENT_DISCONNECTED:
         mqttConnected = false;
         ESP_LOGI(tag, "MQTT_EVENT_DISCONNECTED");
+
         break;
 
     case MQTT_EVENT_SUBSCRIBED:
@@ -744,6 +762,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             // Преобразуем структуру в строку json и публикуем
             char *str = mqttSystemJson(_system);
             ESP_LOGI(tag, "System data: %s", str);
+
             if (mqttConnected)
             {
                 int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
@@ -788,8 +807,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
             // Все выключаем
             xTimerStop(_timer, 0);
-            // vTaskSuspend(move_task_handle);
-            // vTaskSuspend(calibrate_task_handle);
             // Запускаем обновление
             xTaskCreate(&ota_task, "ota_task", 4096, NULL, 3, NULL);
         }
@@ -806,10 +823,200 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     }
 }
 
-/* Функция обработчик событий WiFi, IP, SC (SmartConfig) */
-static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+// Функция обработчик собыьтий WiFi
+void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
-    const char *tag = "event_handler";
+    const char *tag = "wifi_event_handler";
+    esp_err_t err;
+
+    if (event_base == WIFI_EVENT)
+    {
+        switch (event_id)
+        {
+        /* Режим работы STA */
+        case WIFI_EVENT_STA_START:
+            ESP_LOGI(tag, "WIFI_EVENT_STA_START handle");
+
+            /* Если ssid и pass прорчитаны из NVS запускаем задачу подключения к сети
+             * в противном случае запускаем задачу конфигурации с помощью smart config */
+            if (ssid_loaded && password_loaded)
+            {
+                xTaskCreate(wifi_connect_task, "wifi_connect_task", 4096, NULL, 1, NULL);
+                xEventGroupSetBits(event_group, WIFI_START_BIT);
+            }
+            else
+            {
+                xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 1, NULL);
+                xEventGroupSetBits(event_group, SC_START_BIT);
+            }
+            break;
+
+        /* Соединение прервано */
+        case WIFI_EVENT_STA_DISCONNECTED:
+            ESP_LOGI(tag, "WIFI_EVENT_STA_DISCONNECTED handle");
+            ESP_LOGE(tag, "Connect to the AP fail");
+
+            if (connect_retry < max_connect_retry)
+            {
+                ESP_LOGI(tag, "Retry to connect to the AP");
+                err = esp_wifi_connect();
+                if (err == ESP_OK)
+                {
+                    ESP_LOGI(tag, "esp_wifi_connect success");
+                }
+                {
+                    ESP_LOGE(tag, "Failed to esp_wifi_connect, %d", err);
+                }
+                connect_retry++;
+            }
+            else
+            {
+                xEventGroupSetBits(event_group, WIFI_FAIL_BIT);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+// Функция обработчик событий IP
+void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    const char *tag = "ip_event_handler";
+    esp_err_t err;
+
+    if (event_base == IP_EVENT)
+    {
+        switch (event_id)
+        {
+        /* Если подключение успешно и получен IP адрес*/
+        case IP_EVENT_STA_GOT_IP:
+            ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+            ESP_LOGI(tag, "Connection success. IP addr: " IPSTR, IP2STR(&event->ip_info.ip));
+            connect_retry = 0;
+            xEventGroupSetBits(event_group, WIFI_DONE_BIT);
+            xEventGroupClearBits(event_group, WIFI_START_BIT);
+
+            break;
+
+        default:
+            break;
+        }
+    }
+}
+
+// Функция обработчик событий smartconfig
+void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    const char *tag = "sc_event_handler";
+    esp_err_t err;
+
+    if (event_base == SC_EVENT)
+    {
+        switch (event_id)
+        {
+        /* smartconfig завершил сканирование точек доступа */
+        case SC_EVENT_SCAN_DONE:
+            ESP_LOGI(tag, "Smartconfig scan is done");
+            break;
+
+        /* smartconfig нашел канал целевой точки доступа */
+        case SC_EVENT_FOUND_CHANNEL:
+            ESP_LOGI(tag, "Smartconfig found channel");
+            xEventGroupSetBits(event_group, SC_FOUND_BIT);
+            xEventGroupClearBits(event_group, SC_START_BIT);
+            break;
+
+        /* smartconfig получил имя сети SSID и пароль */
+        case SC_EVENT_GOT_SSID_PSWD:
+            smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
+
+            char ssid[33] = {0};
+            char password[65] = {0};
+            uint8_t rvd_data[33] = {0};
+
+            bzero(&wifi_config, sizeof(wifi_config_t));
+            /* Копируем полученное имя сети в структуру wifi_config */
+            memcpy(wifi_config.sta.ssid, evt->ssid, sizeof(wifi_config.sta.ssid));
+            /* Копируем полученный пароль в структуру wifi_config  */
+            memcpy(wifi_config.sta.password, evt->password, sizeof(wifi_config.sta.password));
+            wifi_config.sta.bssid_set = evt->bssid_set;
+            if (wifi_config.sta.bssid_set == true)
+            {
+                memcpy(wifi_config.sta.bssid, evt->bssid, sizeof(wifi_config.sta.bssid));
+            }
+
+            memcpy(ssid, evt->ssid, sizeof(evt->ssid));
+            memcpy(password, evt->password, sizeof(evt->password));
+            nvs_write_str("ssid", ssid);
+            nvs_write_str("pass", password);
+            ESP_LOGI(tag, "Smartconfig got SSID and password. SSID: %s Pass: %s", ssid, password);
+            ssid_loaded = true;
+            password_loaded = true;
+
+            if (evt->type == SC_TYPE_ESPTOUCH_V2)
+            {
+                ESP_ERROR_CHECK(esp_smartconfig_get_rvd_data(rvd_data, sizeof(rvd_data)));
+                ESP_LOGI(tag, "RVD_DATA:");
+                for (int i = 0; i < 33; i++)
+                {
+                    printf("%02x ", rvd_data[i]);
+                }
+                printf("\n");
+            }
+
+            // Разрываем соединение
+            err = esp_wifi_disconnect();
+            if (err == ESP_OK)
+            {
+                ESP_LOGI(tag, "WiFi disconnect success");
+            }
+            else
+            {
+                ESP_LOGE(tag, "WiFi disconnect error: %s", esp_err_to_name(err));
+            }
+
+            //  Создаем новое подключение с принятыми данными
+            err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+            if (err == ESP_OK)
+            {
+                ESP_LOGI(tag, "WiFi set config success");
+            }
+            else
+            {
+                ESP_LOGE(tag, "WiFi set config error: %s", esp_err_to_name(err));
+            }
+            err = esp_wifi_connect();
+            if (err == ESP_OK)
+            {
+                ESP_LOGI(tag, "WiFi connect success");
+            }
+            else
+            {
+                ESP_LOGE(tag, "WiFi connect error: %s", esp_err_to_name(err));
+            }
+
+            // esp_restart();
+            break;
+
+        /* smartconfig отправил ACK на телефон */
+        case SC_EVENT_SEND_ACK_DONE:
+            xEventGroupSetBits(event_group, SC_DONE_BIT);
+            xEventGroupClearBits(event_group, SC_START_BIT);
+            xEventGroupClearBits(event_group, SC_FOUND_BIT);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+/* Функция обработчик событий WiFi, IP, SC (SmartConfig) */
+void ota_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    const char *tag = "ota_event_handler";
+    esp_err_t err;
 
     if (event_base == ESP_HTTPS_OTA_EVENT)
     {
@@ -842,209 +1049,119 @@ static void event_handler(void *arg, esp_event_base_t event_base, int32_t event_
         case ESP_HTTPS_OTA_ABORT:
             ESP_LOGI(tag, "OTA abort");
             break;
-        }
-    }
-
-    if (event_base == WIFI_EVENT)
-    {
-        switch (event_id)
-        {
-        /* Режим работы STA */
-        case WIFI_EVENT_STA_START:
-            /* Если ssid и pass прорчитаны из NVS запускаем задачу подключения к сети
-             * в противном случае запускаем задачу конфигурации с помощью smart config */
-            if (ssid_loaded && password_loaded)
-            {
-                xTaskCreate(wifi_connect_task, "wifi_connect_task", 4096, NULL, 3, NULL);
-            }
-            else
-            {
-                xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 3, NULL);
-            }
-            break;
-        
-        /* Соединение прервано */
-        case WIFI_EVENT_STA_DISCONNECTED:
-            if (s_retry_num < ESP_MAX_RETRY)
-            {
-                esp_wifi_connect();
-                s_retry_num++;
-                ESP_LOGI(tag, "Retry to connect to the AP");
-            }
-            else
-            {
-                xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-            }
-            ESP_LOGE(tag, "Connect to the AP fail");
-            break;
-        }
-    }
-
-    if (event_base == IP_EVENT)
-    {
-        switch (event_id)
-        {
-        /* Если подключение успешно и получен IP адрес*/
-        case IP_EVENT_STA_GOT_IP:
-            ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-            ESP_LOGI(tag, "Connection success. IP addr: " IPSTR, IP2STR(&event->ip_info.ip));
-            s_retry_num = 0;
-            xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-
-            // Запускаем синхронизацию времени
-            time_sync_start("MSK-3");
-            break;
-        }
-    }
-
-    if (event_base == SC_EVENT)
-    {
-        switch (event_id)
-        {
-        /* smartconfig завершил сканирование точек доступа */
-        case SC_EVENT_SCAN_DONE:
-            ESP_LOGI(tag, "Smartconfig scan is done");
-            break;
-
-        /* smartconfig нашел канал целевой точки доступа */
-        case SC_EVENT_FOUND_CHANNEL:
-            ESP_LOGI(tag, "Smartconfig find channel");
-            break;
-
-        /* smartconfig получил имя сети SSID и пароль */
-        case SC_EVENT_GOT_SSID_PSWD:
-            smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
-
-            char ssid[33] = {0};
-            char password[65] = {0};
-            uint8_t rvd_data[33] = {0};
-
-            bzero(&wifi_config, sizeof(wifi_config_t));
-            /* Копируем полученное имя сети в структуру wifi_config */
-            memcpy(wifi_config.sta.ssid, evt->ssid, sizeof(wifi_config.sta.ssid));
-            /* Копируем полученный пароль в структуру wifi_config  */
-            memcpy(wifi_config.sta.password, evt->password, sizeof(wifi_config.sta.password));
-            wifi_config.sta.bssid_set = evt->bssid_set;
-            if (wifi_config.sta.bssid_set == true)
-            {
-                memcpy(wifi_config.sta.bssid, evt->bssid, sizeof(wifi_config.sta.bssid));
-            }
-
-            memcpy(ssid, evt->ssid, sizeof(evt->ssid));
-            memcpy(password, evt->password, sizeof(evt->password));
-            nvs_write_str("ssid", ssid);
-            nvs_write_str("pass", password);
-            ESP_LOGI(tag, "Smartconfig got SSID and password. SSID: %s Pass: %s", ssid, password);
-
-            if (evt->type == SC_TYPE_ESPTOUCH_V2)
-            {
-                ESP_ERROR_CHECK(esp_smartconfig_get_rvd_data(rvd_data, sizeof(rvd_data)));
-                ESP_LOGI(tag, "RVD_DATA:");
-                for (int i = 0; i < 33; i++)
-                {
-                    printf("%02x ", rvd_data[i]);
-                }
-                printf("\n");
-            }
-
-            ESP_ERROR_CHECK(esp_wifi_disconnect());
-            /* Создаем подключение с принятыми данными */
-            ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-            esp_wifi_connect();
-            break;
-
-        /* smartconfig отправил ACK на телефон */
-        case SC_EVENT_SEND_ACK_DONE:
-            xEventGroupSetBits(s_wifi_event_group, ESPTOUCH_DONE_BIT);
+        default:
             break;
         }
     }
 }
 
 /* Задача запроса данных openweathermap */
-void openweather_api_task(void *pvParameters)
+void openweather_task(void *param)
 {
-    openweather_received = false;
+    const char *tag = "openweather_task";
+    char url[200];
+    esp_http_client_handle_t client;
+    int status_code = 0;
 
-    char open_weather_map_url[200];
-    snprintf(open_weather_map_url,
-             sizeof(open_weather_map_url),
-             "%s%s%s%s%s%s%s",
-             "http://api.openweathermap.org/data/2.5/weather?q=",
-             _system.city,
-             ",",
-             _system.country_code,
-             "&units=metric",
-             "&APPID=",
-             _system.ow_key);
-
-    esp_http_client_config_t config = {
-        .url = open_weather_map_url,
-        .method = HTTP_METHOD_GET,
-        .event_handler = http_event_handler,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        // .cert_pem = (char *)server_cert_pem_start,
-
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
-
-    esp_err_t err = esp_http_client_perform(client);
-    if (err == ESP_OK)
+    while (1)
     {
-        int status_code = esp_http_client_get_status_code(client);
+        // Моргаем коротко 2 раза
+        gpio_set_level(LED_STATUS, 1);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        gpio_set_level(LED_STATUS, 0);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        gpio_set_level(LED_STATUS, 1);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        gpio_set_level(LED_STATUS, 0);
+
+        snprintf(url,
+                 sizeof(url),
+                 "%s%s%s%s%s%s%s",
+                 "http://api.openweathermap.org/data/2.5/weather?q=",
+                 _system.city,
+                 ",",
+                 _system.country_code,
+                 "&units=metric",
+                 "&APPID=",
+                 _system.ow_key);
+
+        ESP_LOGI(tag, "Task started from url: %s", url);
+
+        esp_http_client_config_t config = {
+            .url = url,
+            .method = HTTP_METHOD_GET,
+            .event_handler = http_event_handler,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            .is_async = true,
+            .timeout_ms = 60000,
+            // .cert_pem = (char *)server_cert_pem_start,
+
+        };
+
+        client = esp_http_client_init(&config);
+        esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+
+        esp_http_client_perform(client);
+        status_code = esp_http_client_get_status_code(client);
         if (status_code == 200)
         {
-            ESP_LOGI("openweather_api", "Message send success. Status code: %d", status_code);
+            ESP_LOGI(tag, "Perform OpenWeather API Request success. Status code: %d", status_code);
+            break;
         }
         else
-        {
-            ESP_LOGE("openweather_api", "Message sent fail. Status code: %d", status_code);
-        }
-    }
-    else
-    {
-        ESP_LOGE("openweather_api", "Error esp_http_client_perform");
-    }
+            ESP_LOGE(tag, "Perform OpenWeather API Request Error. Status code: %d", status_code);
+        vTaskDelay(pdMS_TO_TICKS(10000));
+    };
+
+    gpio_set_level(LED_STATUS, 0);
     esp_http_client_cleanup(client);
     vTaskDelete(NULL);
 }
 
 /* Выделяем из ответа openweather api данные о времени заката и восхода и записываем в структуру статуса */
-void get_sunrise_sunset(const char *json_string)
+bool get_sunrise_sunset(const char *json_string)
 {
     char *tag = "get_ss_time";
     // Парсим JSON строку
     cJSON *str = cJSON_Parse(json_string);
     cJSON *sys = cJSON_GetObjectItemCaseSensitive(str, "sys");
 
-    // Читаем timezone, sunset, sunrise в UNIX формате
-    _status.sunrise = cJSON_GetObjectItemCaseSensitive(sys, "sunrise")->valueint;
-    _status.sunset = cJSON_GetObjectItemCaseSensitive(sys, "sunset")->valueint;
+    int cod = cJSON_GetObjectItemCaseSensitive(str, "cod")->valueint;
 
-    // Переводим из UNIX формата в читаемый
-    struct tm *tm_sunrise;
-    tm_sunrise = localtime(&_status.sunrise);
-    strftime(_status.str_sunrise, sizeof(_status.str_sunrise), "%H:%M:%S", tm_sunrise);
-    ESP_LOGI(tag, "Time sunrise: %s", _status.str_sunrise);
+    if (cod == 200)
+    {
+        // Читаем timezone, sunset, sunrise в UNIX формате
+        _status.sunrise = cJSON_GetObjectItemCaseSensitive(sys, "sunrise")->valueint;
+        _status.sunset = cJSON_GetObjectItemCaseSensitive(sys, "sunset")->valueint;
 
-    struct tm *tm_sunset;
-    tm_sunset = localtime(&_status.sunset);
-    strftime(_status.str_sunset, sizeof(_status.str_sunset), "%H:%M:%S", tm_sunset);
-    ESP_LOGI(tag, "Time sunset: %s", _status.str_sunset);
+        // Переводим из UNIX формата в читаемый
+        struct tm *tm_sunrise;
+        tm_sunrise = localtime(&_status.sunrise);
+        strftime(_status.str_sunrise, sizeof(_status.str_sunrise), "%H:%M:%S", tm_sunrise);
+        ESP_LOGI(tag, "Time sunrise: %s", _status.str_sunrise);
 
-    struct tm *tm_now;
-    time_t now = time(NULL);
-    tm_now = localtime(&now);
-    strftime(_status.last_updated, sizeof(_status.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
-    ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_updated);
+        struct tm *tm_sunset;
+        tm_sunset = localtime(&_status.sunset);
+        strftime(_status.str_sunset, sizeof(_status.str_sunset), "%H:%M:%S", tm_sunset);
+        ESP_LOGI(tag, "Time sunset: %s", _status.str_sunset);
 
+        struct tm *tm_now;
+        time_t now = time(NULL);
+        tm_now = localtime(&now);
+        strftime(_status.last_updated, sizeof(_status.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
+        ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_updated);
+        return true;
+    }
+    else
+    {
+        ESP_LOGE(tag, "Wrong OpenWeather API request code: %d", cod);
+        return false;
+    }
     cJSON_Delete(str);
 }
 
 /* Инициализация клиента MQTT */
-static void mqtt_start(void)
+void mqtt_start(void)
 {
     char *tag = "mqtt_start";
     const esp_mqtt_client_config_t mqtt_cfg = {
@@ -1094,57 +1211,58 @@ static void mqtt_start(void)
     ESP_LOGI(tag, "MQTT start. Hostname: %s", mqttHostname);
 }
 
-/* Функция инциализации WiFi*/
-static void wifi_init(void)
-{
-    char *tag = "wifi_init";
-
-    ESP_LOGI(tag, "wifi initializating...");
-
-    s_wifi_event_group = xEventGroupCreate();
-    ESP_ERROR_CHECK(esp_netif_init());                // Инициализируем стек протоколов TCP/IP lwIP (Lightweight IP)
-    ESP_ERROR_CHECK(esp_event_loop_create_default()); // Создаем системный цикл событий
-    esp_netif_create_default_wifi_sta();
-
-    /* Инициализируем WiFi значениями по умолчанию */
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    /* Регистрируем события в функции обработчике */
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(ESP_HTTPS_OTA_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL));
-
-    /* Переводим ESP в режим STA и запускаем WiFi*/
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_start());
-}
-
 /* Задача конфигурации с помощью SC SmartConfig*/
-static void smartconfig_task(void *param)
+void smartconfig_task(void *param)
 {
     EventBits_t uxBits;
-    ESP_ERROR_CHECK(esp_smartconfig_set_type(SC_TYPE_ESPTOUCH));
+    esp_err_t err;
+    const char *tag = "smartconfig_task";
+    err = esp_smartconfig_set_type(SC_TYPE_ESPTOUCH);
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "SC_TYPE_ESPTOUCH config success");
+    }
+    else
+    {
+        ESP_LOGE(tag, "SC_TYPE_ESPTOUCH config error");
+    }
+
     smartconfig_start_config_t cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_smartconfig_start(&cfg));
+    err = esp_smartconfig_start(&cfg);
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "Smartconfig start success");
+    }
+    else
+    {
+        ESP_LOGE(tag, "Smartconfig start error: %s", esp_err_to_name(err));
+    }
+
     while (1)
     {
-        uxBits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT | ESPTOUCH_DONE_BIT, true, false, portMAX_DELAY);
-        if (uxBits & WIFI_CONNECTED_BIT)
+        uxBits = xEventGroupWaitBits(event_group, WIFI_DONE_BIT | SC_DONE_BIT, true, false, portMAX_DELAY);
+        if (uxBits & WIFI_DONE_BIT)
         {
             ESP_LOGI("smartconfig_task", "WiFi Connected to ap");
         }
-        if (uxBits & ESPTOUCH_DONE_BIT)
+        if (uxBits & SC_DONE_BIT)
         {
             ESP_LOGI("smartconfig_task", "Smartconfig is done");
-            ESP_ERROR_CHECK(esp_smartconfig_stop());
+            err = esp_smartconfig_stop();
+            if (err == ESP_OK)
+            {
+                ESP_LOGI(tag, "Smartconfig stop success");
+            }
+            else
+            {
+                ESP_LOGE(tag, "Smartconfig stop error: %s", esp_err_to_name(err));
+            }
         }
     }
     vTaskDelete(NULL);
 }
 
-static esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
+esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
 {
     const char *tag = "validate_image_header";
     if (new_app_info == NULL)
@@ -1162,7 +1280,7 @@ static esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
     return ESP_OK;
 }
 
-static esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client)
+esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client)
 {
     esp_err_t err = ESP_OK;
     /* Uncomment to add custom headers to HTTP request */
@@ -1171,7 +1289,7 @@ static esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client)
 }
 
 /* Задача обновления через WiFi */
-static void ota_task(void *param)
+void ota_task(void *param)
 {
     const char *tag = "ota_task";
     esp_err_t ota_finish_err = ESP_OK;
@@ -1255,54 +1373,56 @@ ota_end:
     esp_https_ota_abort(https_ota_handle);
     ESP_LOGE(tag, "ESP_HTTPS_OTA upgrade failed");
     vTaskDelete(NULL);
-
-    // esp_err_t ret = esp_https_ota(&ota_config);
-    // if (ret == ESP_OK)
-    // {
-    //     ESP_LOGI(tag, "OTA Succeed, Rebooting...");
-    //     esp_restart();
-    // }
-    // else
-    // {
-    //     ESP_LOGE(tag, "Firmware upgrade failed");
-
-    //     // Запускаем таймер заново
-    //     xTimerStart(_timer, 0);
-    // }
-
-    // vTaskDelete(NULL);
 }
 
 /* Задача подключения к WiFi */
-static void wifi_connect_task(void *param)
+void wifi_connect_task(void *param)
 {
+    esp_err_t err;
     EventBits_t uxBits;
+    const char *tag = "wifi_connect_task";
 
     /* Конфигурируем esp данными структуры wifi_config и подключаемся к AP (формируется сообщение WIFI_EVENT_STA_START)*/
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_connect());
+    err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "WiFi config set");
+    }
+    else
+    {
+        ESP_LOGE(tag, "WiFi config set error: %s", esp_err_to_name(err));
+    }
+    err = esp_wifi_connect();
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "WiFi connect");
+    }
+    else
+    {
+        ESP_LOGE(tag, "WiFi connect error: %s", esp_err_to_name(err));
+    }
 
     while (1)
     {
         /* Ждем пока не установятся биты WIFI_CONNECTED_BIT или WIFI_FAIL_BIT
          * WIFI_FAIL_BIT устанавливается при повторении ошибки подключения заданное количество раз */
-        uxBits = xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, true, false, portMAX_DELAY);
-        if (uxBits & WIFI_CONNECTED_BIT)
+        uxBits = xEventGroupWaitBits(event_group, WIFI_DONE_BIT | WIFI_FAIL_BIT, true, false, portMAX_DELAY);
+        if (uxBits & WIFI_DONE_BIT)
         {
             ESP_LOGI("wifi_connect_task", "Connected to ap SSID: %s password: %s", wifi_config.sta.ssid, wifi_config.sta.password);
+
+            // Запускаем синхронизацию времени
+            time_sync_start("MSK-3");
         }
         else if (uxBits & WIFI_FAIL_BIT)
         {
             ESP_LOGI("wifi_connect_task", "Failed to connect to SSID: %s, password: %s", wifi_config.sta.ssid, wifi_config.sta.password);
             esp_restart();
         }
-        else
-        {
-            ESP_LOGE("wifi_connect_task", "UNEXPECTED EVENT");
-        }
     }
     vTaskDelete(NULL);
 }
+
 /* Коллбек синхронизации времени по SNTP*/
 void time_sync_cb(struct timeval *tv)
 {
@@ -1329,7 +1449,7 @@ void time_sync_cb(struct timeval *tv)
         time_sync = true;
 
         // Получаем время восхода/заката из openweather api
-        xTaskCreate(&openweather_api_task, "openweather_api_task", 4096, NULL, 3, NULL);
+        xTaskCreate(openweather_task, "openweather_api_task", 4096, NULL, 3, NULL);
 
         // Запускаем MQTT
         mqtt_start();
@@ -1342,6 +1462,8 @@ void timer_cb(TimerHandle_t pxTimer)
     unsigned long now;
     struct tm *tm_now;
 
+    timer++;
+
     if (time_sync)
     {
         now = time(NULL);
@@ -1350,7 +1472,6 @@ void timer_cb(TimerHandle_t pxTimer)
                  now, tm_now->tm_hour, tm_now->tm_min, tm_now->tm_sec, _status.current_pos, _status.target_pos, _status.length);
         if (tm_now->tm_hour == 0 && tm_now->tm_min == 0 && tm_now->tm_sec == 0)
         {
-            xTaskCreate(&openweather_api_task, "openweather_api_task", 4096, NULL, 3, NULL);
         }
         if (_status.onSunrise == 1 && now == _status.sunrise)
         {
@@ -1367,19 +1488,6 @@ void timer_cb(TimerHandle_t pxTimer)
     {
         ESP_LOGW("timer", "Time is not synchronized");
     }
-}
-
-// Задача моргания светодиодом
-void led_blink_task(void *param)
-{
-    while (1)
-    {
-        gpio_set_level(LED_STATUS, 1);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        gpio_set_level(LED_STATUS, 0);
-        vTaskDelay(pdMS_TO_TICKS(500));
-    }
-    vTaskDelete(NULL);
 }
 
 /* Управление вращением мотора */
@@ -1522,22 +1630,219 @@ void calibrate_task(void *param)
     vTaskDelete(NULL);
 }
 
+// Задача светодиодной индикации режимов работы
+void led_task(void *param)
+{
+    EventBits_t uxBits;
+    const char *tag = "led_task";
+    ESP_LOGI(tag, "started...");
+
+    while (1)
+    {
+        uxBits = xEventGroupGetBits(event_group);
+
+        if ((uxBits & SC_START_BIT) != 0)
+        {
+            gpio_set_level(LED_STATUS, 1);
+            vTaskDelay(pdMS_TO_TICKS(25));
+            gpio_set_level(LED_STATUS, 0);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        else if ((uxBits & SC_FOUND_BIT) != 0)
+        {
+            gpio_set_level(LED_STATUS, 1);
+            vTaskDelay(pdMS_TO_TICKS(25));
+            gpio_set_level(LED_STATUS, 0);
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
+        else if ((uxBits & WIFI_START_BIT) != 0)
+        {
+            gpio_set_level(LED_STATUS, 1);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            gpio_set_level(LED_STATUS, 0);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        else if ((uxBits & REINIT_BIT) != 0)
+        {
+            gpio_set_level(LED_STATUS, 1);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+        else
+            gpio_set_level(LED_STATUS, 0);
+    }
+    vTaskDelete(NULL);
+}
+
+// Задача опроса кнопки инициализации
+void init_btn_task(void *param)
+{
+    const char *tag = "init_btn_task";
+    ESP_LOGI(tag, "started...");
+
+    gpio_set_direction(SERVICE_BTN, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(SERVICE_BTN, GPIO_PULLUP_ONLY);
+
+    int cnt = 0;
+    while (1)
+    {
+        if (!gpio_get_level(SERVICE_BTN))
+        {
+            cnt++;
+            ESP_LOGW(tag, "Button pressed: %d", cnt);
+
+            // Когда досчитали до 50 (5 сек) очищаем память и сбрасываем
+            if (cnt == 50)
+            {
+                xEventGroupClearBits(event_group, SC_START_BIT);
+                xEventGroupClearBits(event_group, WIFI_START_BIT);
+                xEventGroupSetBits(event_group, REINIT_BIT);
+
+                ESP_LOGI(tag, "System is reinitializing...");
+                ESP_ERROR_CHECK(nvs_flash_erase());
+                esp_err_t err = nvs_flash_init();
+                ESP_ERROR_CHECK(err);
+
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                esp_restart();
+            }
+        }
+        else
+            cnt = 0;
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    vTaskDelete(NULL);
+}
+
+/* Функция инциализации WiFi*/
+void wifi_init(void)
+{
+    char *tag = "wifi_init";
+    esp_err_t err;
+
+    ESP_LOGI(tag, "wifi initializating...");
+
+    event_group = xEventGroupCreate(); // Создаем группу событий
+    // Инициализируем стек протоколов TCP/IP lwIP (Lightweight IP)
+    err = esp_netif_init();
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "lwIP stack initialized");
+    }
+    else
+    {
+        ESP_LOGE(tag, "lwIP stack initialization error: %s", esp_err_to_name(err));
+    }
+    // Создаем системный цикл событий
+    err = esp_event_loop_create_default();
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "system event loop created");
+    }
+    else
+    {
+        ESP_LOGE(tag, "system event loop creation error: %s", esp_err_to_name(err));
+    }
+
+    esp_netif_create_default_wifi_sta();
+
+    /* Инициализируем WiFi значениями по умолчанию */
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    err = esp_wifi_init(&cfg);
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "WiFi initialized");
+    }
+    else
+    {
+        ESP_LOGE(tag, "WiFi initialization error: %s", esp_err_to_name(err));
+    }
+
+    /* Регистрируем события в функции обработчике */
+    err = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL);
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "WiFi event handler registered");
+    }
+    else
+    {
+        ESP_LOGE(tag, "WiFi event handler registration error: %s", esp_err_to_name(err));
+    }
+
+    err = esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, &ip_event_handler, NULL);
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "IP event handler registered");
+    }
+    else
+    {
+        ESP_LOGE(tag, "IP event handler registration error: %s", esp_err_to_name(err));
+    }
+
+    err = esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &sc_event_handler, NULL);
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "SC event handler registered");
+    }
+    else
+    {
+        ESP_LOGE(tag, "SC event handler registration error: %s", esp_err_to_name(err));
+    }
+
+    err = esp_event_handler_register(ESP_HTTPS_OTA_EVENT, ESP_EVENT_ANY_ID, &ota_event_handler, NULL);
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "OTA event handler registered");
+    }
+    else
+    {
+        ESP_LOGE(tag, "OTA event handler registration error: %s", esp_err_to_name(err));
+    }
+
+    // Переводим ESP в режим STA и запускаем WiFi
+    err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "WiFi mode set to STA");
+    }
+    else
+    {
+        ESP_LOGE(tag, "WiFi mode set to STA error: %s", esp_err_to_name(err));
+    }
+    err = esp_wifi_start();
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(tag, "WiFi started");
+    }
+    else
+    {
+        ESP_LOGE(tag, "WiFi start error: %s", esp_err_to_name(err));
+    }
+}
+
 void app_main(void)
 {
     char *tag = "main";
+
+    // event_group = xEventGroupCreate(); // Создаем группу событий
+    // esp_netif_init();                  // Инициализируем стек протоколов TCP/IP lwIP (Lightweight IP)
+    // esp_event_loop_create_default();   // Создаем системный цикл событий
+
     // Инициализация сигналов управления мотором и светодиодом на выход
     gpio_set_direction(SM_DIR, GPIO_MODE_OUTPUT);
     gpio_set_direction(SM_nEN, GPIO_MODE_OUTPUT);
     gpio_set_direction(SM_STEP, GPIO_MODE_OUTPUT);
-    gpio_set_direction(LED_STATUS, GPIO_MODE_OUTPUT);
 
     // Без подтяжки
     gpio_set_pull_mode(SM_DIR, GPIO_FLOATING);
     gpio_set_pull_mode(SM_nEN, GPIO_FLOATING);
     gpio_set_pull_mode(SM_STEP, GPIO_FLOATING);
+
+    // Инициализация светодиода
+    gpio_set_direction(LED_STATUS, GPIO_MODE_OUTPUT);
     gpio_set_pull_mode(LED_STATUS, GPIO_FLOATING);
 
-    // Снимаем сигнал разрешения вращения
+    // Запрещаем вращение
     gpio_set_level(SM_nEN, 1);
 
     // Инициализируем NVS
@@ -1551,7 +1856,7 @@ void app_main(void)
 
     nvs_handle_t nvs_handle;
     /* Пытаемся открыть NVS для чтения*/
-    err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
     if (err == ESP_OK)
     {
         ESP_LOGI(tag, "NVS storage open success");
@@ -1725,7 +2030,17 @@ void app_main(void)
     ssid_loaded = true;
     */
 
+    // char ssid[32] = "YA31";
+    // char pass[32] = "audia3o765km190rus";
+    // memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
+    // memcpy(wifi_config.sta.password, pass, sizeof(wifi_config.sta.ssid));
+    // password_loaded = true;
+    // ssid_loaded = true;
+
     wifi_init();
+
+    xTaskCreate(led_task, "led_task", 2048, NULL, 3, NULL);
+    xTaskCreate(init_btn_task, "init_btn_task", 2048, NULL, 3, NULL);
 
     // Создаем программный таймер с периодом 1 секунда
     _timer = xTimerCreate(
