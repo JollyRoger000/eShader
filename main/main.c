@@ -199,10 +199,12 @@ bool get_sunrise_sunset(const char *json_string);
 esp_err_t nvs_write_u8(char *key, uint8_t val);
 esp_err_t nvs_write_u16(char *key, uint16_t val);
 esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client);
+esp_err_t http_event_handler(esp_http_client_event_t *evt);
 void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 void ota_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
 
 // Функция калибровки длины шторы
 void onCalibrate()
@@ -823,7 +825,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
     }
 }
 
-// Функция обработчик собыьтий WiFi
+// Функция обработчик событий WiFi
 void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     const char *tag = "wifi_event_handler";
@@ -977,27 +979,8 @@ void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, 
                 ESP_LOGE(tag, "WiFi disconnect error: %s", esp_err_to_name(err));
             }
 
-            //  Создаем новое подключение с принятыми данными
-            err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
-            if (err == ESP_OK)
-            {
-                ESP_LOGI(tag, "WiFi set config success");
-            }
-            else
-            {
-                ESP_LOGE(tag, "WiFi set config error: %s", esp_err_to_name(err));
-            }
-            err = esp_wifi_connect();
-            if (err == ESP_OK)
-            {
-                ESP_LOGI(tag, "WiFi connect success");
-            }
-            else
-            {
-                ESP_LOGE(tag, "WiFi connect error: %s", esp_err_to_name(err));
-            }
-
-            // esp_restart();
+            xTaskCreate(wifi_connect_task, "wifi_connect_task", 4096, NULL, 1, NULL);
+            xEventGroupSetBits(event_group, WIFI_START_BIT);
             break;
 
         /* smartconfig отправил ACK на телефон */
