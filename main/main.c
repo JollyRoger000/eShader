@@ -31,6 +31,7 @@
 #define WEB_PORT "443"
 #define WEB_URL "https://api.telegram.org/bot7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM/getme"
 
+#define DEFAULT_MAX_STEPS   10000
 #define OW_KEY_DEFAULT "19fcdfb788eed5e53824116dc41ebe90"
 #define TG_KEY_DEFAULT "7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM"
 
@@ -162,7 +163,7 @@ wifi_config_t wifi_config; // Структура для хранения нас�
 size_t openweather_len = 0;
 
 int connect_retry = 0;
-int max_connect_retry = 5;
+int max_connect_retry = 10;
 int timer = 0;
 
 uint16_t max_steps = 30000;
@@ -547,8 +548,8 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
         msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicDelSunset, mqttTopicDelSunsetQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicDelSunset, msg_id);
 
-        // msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystem, mqttTopicSystemQoS);
-        // ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystem, msg_id);
+        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystem, mqttTopicSystemQoS);
+        ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystem, msg_id);
 
         msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemOWKey, mqttTopicSystemOWKeyQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemOWKey, msg_id);
@@ -594,7 +595,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
         printf("topic= %s\n", topic);
         printf("data= %s\n", data);
 
-        // Если пришел запрос статуса устройства
+        // Топик запроса статуса устройства
         if (!strcmp(topic, mqttTopicStatus))
         {
             if (!strcmp(data, "get"))
@@ -613,7 +614,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             }
         }
 
-        // Если пришел запрос на добавление таймера при закате
+        // Топик добавления таймера при закате
         if (!strcmp(topic, mqttTopicAddSunrise))
         {
             _status.onSunrise = 1;
@@ -634,7 +635,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             nvs_write_u8("onSunrise", _status.onSunrise);
         }
 
-        // Если пришел запрос на добавление таймера при восходе
+        // Топик добавления таймера при восходе
         if (!strcmp(topic, mqttTopicAddSunset))
         {
             _status.onSunset = 1;
@@ -655,7 +656,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             nvs_write_u8("onSunset", _status.onSunset);
         }
 
-        // Если пришел запрос на удаление таймера при закате
+        // Топик удаления таймера при закате
         if (!strcmp(topic, mqttTopicDelSunrise))
         {
             _status.onSunrise = 0;
@@ -673,7 +674,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             nvs_write_u8("onSunrise", _status.onSunrise);
         }
 
-        // Если пришел запрос на удаление таймера при восходе
+        // Топик удаления таймера при восходе
         if (!strcmp(topic, mqttTopicDelSunset))
         {
             _status.onSunset = 0;
@@ -691,7 +692,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             nvs_write_u8("onSunset", _status.onSunset);
         }
 
-        // Если пришел запрос на выполнение команды управления
+        // Топик управления устройством
         if (!strcmp(topic, mqttTopicControl))
         {
             if (!strcmp(data, "calibrate"))
@@ -708,9 +709,10 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             }
         }
 
-        // Если пришел запрос на чтение параметров устройства
+        // Топик управления чтения системных параметров
         if (!strcmp(topic, mqttTopicSystem))
         {
+            // Запрос на чтение параметров системы
             if (!strcmp(data, "get"))
             {
                 ESP_LOGW(tag, "Get system data topic received");
@@ -722,9 +724,33 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
                     ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
                 }
             }
+
+            // Запрос на перезагрузку
+            if (!strcmp(data, "reset"))
+            {
+                ESP_LOGW(tag, "Reset system data topic received");
+                esp_restart();
+            }
+
+            // Запрос на переинициализацию системы
+            if (!strcmp(data, "erase"))
+            {
+                ESP_LOGW(tag, "Erase system data topic received");
+                xEventGroupClearBits(event_group, SC_START_BIT);
+                xEventGroupClearBits(event_group, WIFI_START_BIT);
+                xEventGroupSetBits(event_group, REINIT_BIT);
+
+                ESP_LOGI(tag, "System is reinitializing...");
+                ESP_ERROR_CHECK(nvs_flash_erase());
+                esp_err_t err = nvs_flash_init();
+                ESP_ERROR_CHECK(err);
+
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                esp_restart();
+            }
         }
 
-        // Если пришел запрос изменение параметра max_steps
+        // Топик изменения параметра max_steps
         if (!strcmp(topic, mqttTopicSystemMaxSteps))
         {
             uint16_t val = strtol(data, NULL, 10);
@@ -752,7 +778,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             }
         }
 
-        // Если пришел запрос на изменение ключа OpenWeatherMap api
+        // Топик изменения ключа OpenWeatherMap api
         if (!strcmp(topic, mqttTopicSystemOWKey))
         {
             ESP_LOGW(tag, "Set new OpenWeather api key topic received: %s", data);
@@ -772,7 +798,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             }
         }
 
-        // Если пришел запрос на изменение ключа Telegram api
+        // Топик изменения ключа Telegram api
         if (!strcmp(topic, mqttTopicSystemTGKey))
         {
             ESP_LOGW(tag, "Set new Telegram api key topic received: %s", data);
@@ -791,7 +817,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             }
         }
 
-        // Если пришел запрос на обновление прошивки по ota
+        // Топик обновления прошивки по ota
         if (!strcmp(topic, mqttTopicSystemUpdate))
         {
             ESP_LOGW(tag, "Firmware update topic received: %s", data);
@@ -816,11 +842,11 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
         break;
 
     case MQTT_EVENT_ERROR:
-        ESP_LOGE("mqtt_event", "MQTT_EVENT_ERROR");
+        ESP_LOGE(tag, "MQTT_EVENT_ERROR");
         break;
 
     default:
-        ESP_LOGW("mqtt_event", "Other event id:%d", event->event_id);
+        ESP_LOGW(tag, "Other event id:%d", event->event_id);
         break;
     }
 }
@@ -899,7 +925,6 @@ void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, 
             connect_retry = 0;
             xEventGroupSetBits(event_group, WIFI_DONE_BIT);
             xEventGroupClearBits(event_group, WIFI_START_BIT);
-
             break;
 
         default:
@@ -981,6 +1006,8 @@ void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, 
 
             xTaskCreate(wifi_connect_task, "wifi_connect_task", 4096, NULL, 1, NULL);
             xEventGroupSetBits(event_group, WIFI_START_BIT);
+            xEventGroupClearBits(event_group, SC_START_BIT);
+            xEventGroupClearBits(event_group, SC_FOUND_BIT);
             break;
 
         /* smartconfig отправил ACK на телефон */
@@ -1961,7 +1988,7 @@ void app_main(void)
         }
         else
         {
-            _system.max_steps = 0;
+            _system.max_steps = DEFAULT_MAX_STEPS;
             ESP_LOGW(tag, "Max steps parameter read error (%s). Set default value: %d", esp_err_to_name(err), _system.max_steps);
         }
         // Читаем OpenWeatherMap api key
