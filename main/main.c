@@ -58,8 +58,6 @@
 #define OW_REFRESH_BIT BIT14    // Бит обновления данных openweather
 #define TOPIC_STATUS_BIT BIT15  // Бит публикации топика статуса
 #define TOPIC_SYSTEM_BIT BIT16  // Бит публикации системного топика
-#define MOVE_SM_BIT BIT17       // Бит начала вращения мотора
-#define STOP_SM_BIT BIT18       // Бит остановки мотора
 
 char *openweather_data = NULL;
 char mqttHostname[32];
@@ -198,6 +196,7 @@ SystemStruct _system = {
 
 EventGroupHandle_t event_group; // Группа событий
 TaskHandle_t calibrate_task_handle;
+TaskHandle_t move_task_handle;
 TimerHandle_t _timer = NULL;
 esp_mqtt_client_handle_t mqttClient;
 wifi_config_t wifi_config; // Структура для хранения настроек WIFI
@@ -277,19 +276,31 @@ void onStop()
         gpio_set_level(LED_STATUS, 0);
         _status.length = calibrateCnt;
         _status.cal_status = 1;
+        _status.current_pos = _status.length;
+        _status.target_pos = _status.length;
         strcpy(_status.move_status, "stopped");
 
         ESP_LOGI(tag, "Calibrate success. Shade lenght is: %d", _status.length);
         nvs_write_u16("length", _status.length);
         nvs_write_u8("cal_status", _status.cal_status);
+        nvs_write_u16("current_pos", _status.current_pos);
+        nvs_write_u16("target_pos", _status.target_pos);
 
         // Публикуем топик статуса
         xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
     }
     else if (!strcmp(_status.move_status, "opening") || !strcmp(_status.move_status, "closing"))
     {
-        // Останавливаем мотор
-        xEventGroupSetBits(event_group, STOP_SM_BIT);
+        vTaskSuspend(move_task_handle);
+        gpio_set_level(LED_STATUS, 0);
+        strcpy(_status.move_status, "stopped");
+
+        _status.target_pos = _status.current_pos;
+        nvs_write_u16("current_pos", _status.current_pos);
+        nvs_write_u16("target_pos", _status.target_pos);
+
+        // Публикуем топик статуса
+        xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
     }
 }
 
@@ -302,8 +313,7 @@ void onShade(int shade)
     _status.shade = shade;
     if (_status.cal_status == 1)
     {
-        // Запускаем мотор
-        xEventGroupSetBits(event_group, MOVE_SM_BIT);
+        xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
     }
     else
     {
@@ -1593,14 +1603,12 @@ void timer_cb(TimerHandle_t pxTimer)
         if (_status.onSunrise == 1 && now == _status.sunrise)
         {
             _status.shade = _status.shadeSunrise;
-            // Запускаем мотор
-            xEventGroupSetBits(event_group, MOVE_SM_BIT);
+            xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
         }
         if (_status.onSunset == 1 && now == _status.sunset)
         {
             _status.shade = _status.shadeSunset;
-            // Запускаем мотор
-            xEventGroupSetBits(event_group, MOVE_SM_BIT);
+            xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
         }
     }
     else
@@ -1614,102 +1622,71 @@ void move_task(void *param)
 {
     char *tag = "sm_move_task";
     int dir = 0;
-    int i = 0;
-    EventBits_t uxBits;
+   
+    _status.target_pos = (int)(_status.length * _status.shade / 100.0);
 
-    ESP_LOGI(tag, "started...");
-
-    while (1)
+    if (_status.current_pos < _status.target_pos)
     {
-        uxBits = xEventGroupWaitBits(event_group, MOVE_SM_BIT | STOP_SM_BIT, true, false, portMAX_DELAY);
-        if (uxBits & MOVE_SM_BIT)
-        {
-            ESP_LOGI(tag, "Move started");
-            _status.target_pos = (int)(_status.length * _status.shade / 100.0);
-            if (_status.current_pos < _status.target_pos)
-            {
-                // Направление движения - вниз (закрытие)
-                strcpy(_status.move_status, "closing");
-                gpio_set_level(SM_DIR, 1);
-                // Разрешаем вращение
-                gpio_set_level(SM_nEN, 0);
-                dir = 1;
-                ESP_LOGI(tag, "SM move started: (%s) to target: %d", _status.move_status, _status.target_pos);
-            }
-            if (_status.current_pos > _status.target_pos)
-            {
-                // Направление движения - вверх (открытие)
-                strcpy(_status.move_status, "opening");
-                gpio_set_level(SM_DIR, 0);
-                // Разрешаем вращение
-                gpio_set_level(SM_nEN, 0);
-                dir = 2;
-                ESP_LOGI(tag, "SM move started: (%s) to target: %d", _status.move_status, _status.target_pos);
-            }
-            if (_status.current_pos == _status.target_pos)
-            {
-                // Положение установлено
-                strcpy(_status.move_status, "stopped");
-                dir = 0;
-                // Запрещаем вращение
-                gpio_set_level(SM_nEN, 1);
-                ESP_LOGI(tag, "SM on target: %d", _status.target_pos);
-            }
-
-            if (dir != 0)
-            {
-                // Сигналы вращения и индикации
-                while (_status.current_pos < max_steps)
-                {
-                    i++;
-                    if (dir == 1)
-                        _status.current_pos++;
-                    if (dir == 2)
-                        _status.current_pos--;
-                    if (_status.current_pos <= 0)
-                        _status.current_pos = 0;
-
-                    gpio_set_level(SM_STEP, 1);
-                    if (i == 50)
-                        gpio_set_level(LED_STATUS, 1);
-                    ets_delay_us(1000);
-                    gpio_set_level(SM_STEP, 0);
-                    if (i == 100)
-                    {
-                        gpio_set_level(LED_STATUS, 0);
-                        i = 0;
-                    }
-                    ets_delay_us(1000);
-
-                    if (_status.current_pos == _status.target_pos)
-                        break;
-                }
-
-                // Снимаем сигнал разрешения
-                gpio_set_level(SM_nEN, 1);
-                ESP_LOGI(tag, "task stopped");
-            }
-
-            strcpy(_status.move_status, "stopped");
-            nvs_write_u16("current_pos", _status.current_pos);
-            nvs_write_u16("target_pos", _status.target_pos);
-
-            // Публикуем топик статуса
-            xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
-        }
-        if (uxBits & STOP_SM_BIT)
-        {
-            gpio_set_level(LED_STATUS, 0);
-            strcpy(_status.move_status, "stopped");
-
-            _status.target_pos = _status.current_pos;
-            nvs_write_u16("current_pos", _status.current_pos);
-            nvs_write_u16("target_pos", _status.target_pos);
-
-            // Публикуем топик статуса
-            xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
-        }
+        // Направление движения - вниз (закрытие)
+        strcpy(_status.move_status, "closing");
+        gpio_set_level(SM_DIR, 1);
+        // Разрешаем вращение
+        gpio_set_level(SM_nEN, 0);
+        dir = 1;
+        ESP_LOGI(tag, "SM move started: (%s) to target: %d", _status.move_status, _status.target_pos);
     }
+    if (_status.current_pos > _status.target_pos)
+    {
+        // Направление движения - вверх (открытие)
+        strcpy(_status.move_status, "opening");
+        gpio_set_level(SM_DIR, 0);
+        // Разрешаем вращение
+        gpio_set_level(SM_nEN, 0);
+        dir = 2;
+        ESP_LOGI(tag, "SM move started: (%s) to target: %d", _status.move_status, _status.target_pos);
+    }
+    if (_status.current_pos == _status.target_pos)
+    {
+        // Положение установлено
+        strcpy(_status.move_status, "stopped");
+        dir = 0;
+        // Запрещаем вращение
+        gpio_set_level(SM_nEN, 1);
+        ESP_LOGI(tag, "SM on target: %d", _status.target_pos);
+    }
+
+    if (dir != 0)
+    {
+        // Сигналы вращения и индикации
+        while (_status.current_pos < max_steps)
+        {
+            if (dir == 1)
+                _status.current_pos++;
+            if (dir == 2)
+                _status.current_pos--;
+            if (_status.current_pos <= 0)
+                _status.current_pos = 0;
+
+            gpio_set_level(SM_STEP, 1);
+            ets_delay_us(1000);
+            gpio_set_level(SM_STEP, 0);
+            ets_delay_us(1000);
+
+            if (_status.current_pos == _status.target_pos)
+                break;
+        }
+
+        // Снимаем сигнал разрешения
+        gpio_set_level(SM_nEN, 1);
+        ESP_LOGI(tag, "task stopped");
+    }
+
+    strcpy(_status.move_status, "stopped");
+    nvs_write_u16("current_pos", _status.current_pos);
+    nvs_write_u16("target_pos", _status.target_pos);
+
+    // Публикуем топик статуса
+    xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
 
     vTaskDelete(NULL);
 }
@@ -1726,23 +1703,14 @@ void calibrate_task(void *param)
     gpio_set_level(SM_nEN, 0);
     gpio_set_level(SM_DIR, 1);
 
-    int i = 0;
     // Сигналы вращения
     while (calibrateCnt < max_steps)
     {
-        i++;
         calibrateCnt++;
 
         gpio_set_level(SM_STEP, 1);
-        if (i == 20)
-            gpio_set_level(LED_STATUS, 1);
         ets_delay_us(1000);
         gpio_set_level(SM_STEP, 0);
-        if (i == 40)
-        {
-            gpio_set_level(LED_STATUS, 0);
-            i = 0;
-        }
         ets_delay_us(1000);
     }
     // Снимаем сигнал разрешения
@@ -2299,7 +2267,6 @@ void app_main(void)
     xTaskCreate(init_btn_task, "init_btn_task", 2048, NULL, 3, NULL);
     xTaskCreate(openweather_task, "openweather_task", 4096, NULL, 3, NULL);
     xTaskCreate(topic_publish_task, "topic_publish_task", 4096, NULL, 3, NULL);
-    xTaskCreate(move_task, "move_task", 4096, NULL, 3, NULL);
 
     // Создаем программный таймер с периодом 1 секунда
     _timer = xTimerCreate(
