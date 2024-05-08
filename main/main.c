@@ -56,6 +56,8 @@
 #define OTA_CONNECT_BIT BIT12   // Бит подключения к серверу
 #define OTA_FINISH_BIT BIT13    // Бит завершения обновления
 #define OW_REFRESH_BIT BIT14    // Бит обновления данных openweather
+#define TOPIC_STATUS_BIT BIT15  // Бит публикации топика статуса
+#define TOPIC_SYSTEM_BIT BIT16  // Бит публикации системного топика
 
 char *openweather_data = NULL;
 char mqttHostname[32];
@@ -233,6 +235,7 @@ void wifi_connect_task(void *param);
 void ota_task(void *param);
 void led_task(void *param);
 void init_btn_task(void *param);
+void topic_publish_task(void *param);
 char *mqttStatusJson(StatusStruct status);
 char *mqttSystemJson(SystemStruct status);
 bool get_sunrise_sunset(const char *json_string);
@@ -254,16 +257,8 @@ void onCalibrate()
 
     strcpy(_status.move_status, "calibrating");
 
-    // Получаем строку статуса в json формате
-    char *status = mqttStatusJson(_status);
-    ESP_LOGI(tag, "New status string: %s", status);
-    // Публикуем новый статус
-    if (mqttConnected)
-    {
-        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-        ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
-    }
-    free(status);
+    // Публикуем топик статуса
+    xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
     // Запускаем задачу калибровки
     xTaskCreate(calibrate_task, "calibrate_task", 4096, NULL, 3, &calibrate_task_handle);
 }
@@ -287,16 +282,8 @@ void onStop()
         nvs_write_u16("length", _status.length);
         nvs_write_u8("cal_status", _status.cal_status);
 
-        // Получаем строку статуса в json формате
-        char *status = mqttStatusJson(_status);
-        ESP_LOGI(tag, "New status string: %s", status);
-        // Публикуем новый статус
-        if (mqttConnected)
-        {
-            int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-            ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
-        }
-        free(status);
+        // Публикуем топик статуса
+        xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
     }
     else if (!strcmp(_status.move_status, "opening") || !strcmp(_status.move_status, "closing"))
     {
@@ -308,16 +295,8 @@ void onStop()
         nvs_write_u16("current_pos", _status.current_pos);
         nvs_write_u16("target_pos", _status.target_pos);
 
-        // Получаем строку статуса в json формате
-        char *status = mqttStatusJson(_status);
-        ESP_LOGI(tag, "New status string: %s", status);
-        // Публикуем новый статус
-        if (mqttConnected)
-        {
-            int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-            ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
-        }
-        free(status);
+        // Публикуем топик статуса
+        xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
     }
 }
 
@@ -338,15 +317,8 @@ void onShade(int shade)
         strcpy(_status.move_status, "stopped");
     }
 
-    // Публикуем новый статус
-    char *status = mqttStatusJson(_status);
-    ESP_LOGI(tag, "New status string: %s", status);
-    if (mqttConnected)
-    {
-        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-        ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
-    }
-    free(status);
+    /// Публикуем топик статуса
+    xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
 }
 
 void time_sync_start(const char *tz)
@@ -522,15 +494,8 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
         /* Выделяем из ответа время заката/восхода, преобразуем в JSON и публикуем */
         if (get_sunrise_sunset(openweather_data))
         {
-            char *status = mqttStatusJson(_status);
-            ESP_LOGI(tag, "New status string: %s", status);
-            /* Публикуем новый статус */
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
-            }
-            free(status);
+            // Публикуем топик статуса
+            xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
             free(openweather_data);
         }
         else
@@ -739,15 +704,8 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             {
                 ESP_LOGW(tag, "Get status topic received");
 
-                char *status = mqttStatusJson(_status);
-                ESP_LOGI(tag, "New status string: %s", status);
-                // Публикуем cтатус
-                if (mqttConnected)
-                {
-                    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-                    ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
-                }
-                free(status);
+                // Публикуем топик статуса
+                xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
             }
         }
 
@@ -758,15 +716,8 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             _status.shadeSunrise = atoi(data);
             ESP_LOGW(tag, "Add sunrise topic received. Set shade on sunrise: %d", _status.shadeSunrise);
 
-            char *status = mqttStatusJson(_status);
-            ESP_LOGI(tag, "New status string: %s", status);
-            // Публикуем новый статус
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
-            }
-            free(status);
+            // Публикуем топик статуса
+            xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
 
             nvs_write_u8("shade_sunrise", _status.shadeSunrise);
             nvs_write_u8("onSunrise", _status.onSunrise);
@@ -779,15 +730,8 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             _status.shadeSunset = atoi(data);
             ESP_LOGW(tag, "Add sunset topic received. Set shade on sunset: %d", _status.shadeSunset);
 
-            char *status = mqttStatusJson(_status);
-            ESP_LOGI(tag, "New status string: %s", status);
-            // Публикуем новый статус
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
-            }
-            free(status);
+            // Публикуем топик статуса
+            xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
 
             nvs_write_u8("shade_sunset", _status.shadeSunset);
             nvs_write_u8("onSunset", _status.onSunset);
@@ -799,15 +743,8 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             _status.onSunrise = 0;
             ESP_LOGW(tag, "Delete sunrise topic received");
 
-            char *status = mqttStatusJson(_status);
-            ESP_LOGI(tag, "New status string: %s", status);
-            // Публикуем новый статус
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
-            }
-            free(status);
+            // Публикуем топик статуса
+            xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
             nvs_write_u8("onSunrise", _status.onSunrise);
         }
 
@@ -817,15 +754,8 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             _status.onSunset = 0;
             ESP_LOGW(tag, "Delete sunset topic received");
 
-            char *status = mqttStatusJson(_status);
-            ESP_LOGI(tag, "New status string: %s", status);
-            // Публикуем новый статус
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
-            }
-            free(status);
+            // Публикуем топик статуса
+            xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
             nvs_write_u8("onSunset", _status.onSunset);
         }
 
@@ -853,13 +783,9 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             if (!strcmp(data, "get"))
             {
                 ESP_LOGW(tag, "Get system data topic received");
-                char *str = mqttSystemJson(_system);
-                ESP_LOGI(tag, "System data: %s", str);
-                if (mqttConnected)
-                {
-                    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
-                    ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
-                }
+
+                // Публикуем системный топик
+                xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
             }
 
             // Запрос на перезагрузку
@@ -900,14 +826,8 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
                 // Сохраняем новое значение
                 nvs_write_u16("max_steps", _system.max_steps);
 
-                // Преобразуем структуру в строку json и публикуем
-                char *str = mqttSystemJson(_system);
-                ESP_LOGI(tag, "System data: %s", str);
-                if (mqttConnected)
-                {
-                    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
-                    ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
-                }
+                // Публикуем системный топик
+                xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
             }
             else
             {
@@ -924,15 +844,8 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             // Сохраняем новое значение
             nvs_write_str("ow_key", _system.ow_key);
 
-            // Преобразуем структуру в строку json и публикуем
-            char *str = mqttSystemJson(_system);
-            ESP_LOGI(tag, "System data: %s", str);
-
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
-            }
+            // Публикуем системный топик
+            xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
         }
 
         // Топик изменения ключа Telegram api
@@ -944,14 +857,8 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             // Сохраняем новое значение
             nvs_write_str("tg_key", _system.tg_key);
 
-            // Преобразуем структуру в строку json и публикуем
-            char *str = mqttSystemJson(_system);
-            ESP_LOGI(tag, "System data: %s", str);
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
-            }
+            // Публикуем системный топик
+            xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
         }
 
         // Топик обновления прошивки по ota
@@ -964,17 +871,12 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             // Сохраняем новое значение
             nvs_write_str("update_url", _system.update_url);
 
-            // Преобразуем структуру в строку json и публикуем
-            char *str = mqttSystemJson(_system);
-            ESP_LOGI(tag, "System data: %s", str);
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
-            }
+            // Публикуем системный топик
+            xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
 
             // Все выключаем
             xTimerStop(_timer, 0);
+
             // Запускаем обновление
             xTaskCreate(&ota_task, "ota_task", 4096, NULL, 3, NULL);
         }
@@ -988,14 +890,8 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             // Сохрапняем в nvs
             nvs_write_str("server_time1", _system.time_server1);
 
-            // Преобразуем в json и публикуем
-            char *str = mqttSystemJson(_system);
-            ESP_LOGI(tag, "System data: %s", str);
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
-            }
+            // Публикуем системный топик
+            xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
         }
 
         // Топик обновления сервера 2 синхронизации времени
@@ -1007,14 +903,8 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             // Сохраняем в nvs
             nvs_write_str("server_time2", _system.time_server2);
 
-            // Преобразуем в json и публикуем
-            char *str = mqttSystemJson(_system);
-            ESP_LOGI(tag, "System data: %s", str);
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
-            }
+            // Публикуем системный топик
+            xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
         }
 
         // топик обновления временной зоны
@@ -1026,14 +916,8 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             // Сохраняем в nvs
             nvs_write_str("timezone", _system.timezone);
 
-            // Преобразуем в json и публикуем
-            char *str = mqttSystemJson(_system);
-            ESP_LOGI(tag, "System data: %s", str);
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
-            }
+            // Публикуем системный топик
+            xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
         }
 
         // Топик обновления города
@@ -1045,14 +929,9 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             // Сохраняем в nvs
             nvs_write_str("city", _system.city);
 
-            // Преобразуем в json и публикуем
-            char *str = mqttSystemJson(_system);
-            ESP_LOGI(tag, "System data: %s", str);
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
-            }
+            // Публикуем системный топик
+            xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+
             // Выставляем бит для задачи openweather_task
             xEventGroupSetBits(event_group, OW_REFRESH_BIT);
         }
@@ -1066,14 +945,9 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             // Сохраняем в nvs
             nvs_write_str("country", _system.country);
 
-            // Преобразуем в json и публикуем
-            char *str = mqttSystemJson(_system);
-            ESP_LOGI(tag, "System data: %s", str);
-            if (mqttConnected)
-            {
-                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
-            }
+            // Публикуем системный топик
+            xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+
             // Выставляем бит для задачи openweather_task
             xEventGroupSetBits(event_group, OW_REFRESH_BIT);
         }
@@ -1407,6 +1281,43 @@ bool get_sunrise_sunset(const char *json_string)
         return false;
     }
     cJSON_Delete(str);
+}
+
+// Задача публикации топика
+void topic_publish_task(void *param)
+{
+    const char *tag = "topic_publish_task";
+    EventBits_t uxBits;
+    esp_err_t err;
+    char *str;
+
+    ESP_LOGI(tag, "started...");
+
+    while (1)
+    {
+        uxBits = xEventGroupWaitBits(event_group, TOPIC_STATUS_BIT | TOPIC_SYSTEM_BIT, true, false, portMAX_DELAY);
+        if (uxBits & TOPIC_SYSTEM_BIT)
+        {
+            str = mqttSystemJson(_system);
+            ESP_LOGI(tag, "System topic: %s", str);
+            if (mqttConnected)
+            {
+                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
+                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
+            }
+        }
+        if (uxBits & TOPIC_STATUS_BIT)
+        {
+            str = mqttStatusJson(_status);
+            ESP_LOGI(tag, "Status topic: %s", str);
+            if (mqttConnected)
+            {
+                int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, str, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
+                ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, str);
+            }
+        }
+    }
+    vTaskDelete(NULL);
 }
 
 /* Задача конфигурации с помощью SC SmartConfig*/
@@ -1779,15 +1690,8 @@ void move_task(void *param)
     nvs_write_u16("current_pos", _status.current_pos);
     nvs_write_u16("target_pos", _status.target_pos);
 
-    // Публикуем новый статус
-    char *status = mqttStatusJson(_status);
-    ESP_LOGI(tag, "New status string: %s", status);
-    if (mqttConnected)
-    {
-        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-        ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
-    }
-    free(status);
+    // Публикуем топик статуса
+    xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
 
     vTaskDelete(NULL);
 }
@@ -1829,15 +1733,8 @@ void calibrate_task(void *param)
     _status.cal_status = 0;
     strcpy(_status.move_status, "stopped");
 
-    // Публикуем новый статус
-    char *status = mqttStatusJson(_status);
-    ESP_LOGI(tag, "New status string: %s", status);
-    if (mqttConnected)
-    {
-        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, status, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-        ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, status);
-    }
-    free(status);
+    // Публикуем топик статуса
+    xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
 
     vTaskDelete(NULL);
 }
@@ -2383,6 +2280,7 @@ void app_main(void)
     xTaskCreate(led_task, "led_task", 2048, NULL, 3, NULL);
     xTaskCreate(init_btn_task, "init_btn_task", 2048, NULL, 3, NULL);
     xTaskCreate(openweather_task, "openweather_task", 4096, NULL, 3, NULL);
+    xTaskCreate(topic_publish_task, "topic_publish_task", 4096, NULL, 3, NULL);
 
     // Создаем программный таймер с периодом 1 секунда
     _timer = xTimerCreate(
