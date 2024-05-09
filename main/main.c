@@ -113,25 +113,25 @@ int mqttTopicSystemTimeZoneQoS = 0;
 int mqttTopicSystemCountryQoS = 0;
 int mqttTopicSystemCityQoS = 0;
 
-int mqttTopicStatusRet = 1;
-int mqttTopicCheckOnlinetRet = 1;
-int mqttTopicControlRet = 1;
-int mqttTopicTimersRet = 1;
-int mqttTopicAddTimerRet = 1;
-int mqttTopicAddSunriseRet = 1;
-int mqttTopicAddSunsetRet = 1;
-int mqttTopicDelSunriseRet = 1;
-int mqttTopicDelSunsetRet = 1;
-int mqttTopicSystemRet = 1;
-int mqttTopicSystemUpdateRet = 1;
-int mqttTopicSystemMaxStepsRet = 1;
-int mqttTopicSystemTGKeyRet = 1;
-int mqttTopicSystemOWKeyRet = 1;
-int mqttTopicSystemServerTime1Ret = 1;
-int mqttTopicSystemServerTime2Ret = 1;
-int mqttTopicSystemTimeZoneRet = 1;
-int mqttTopicSystemCountryRet = 1;
-int mqttTopicSystemCityRet = 1;
+int mqttTopicStatusRet = 0;
+int mqttTopicCheckOnlinetRet = 0;
+int mqttTopicControlRet = 0;
+int mqttTopicTimersRet = 0;
+int mqttTopicAddTimerRet = 0;
+int mqttTopicAddSunriseRet = 0;
+int mqttTopicAddSunsetRet = 0;
+int mqttTopicDelSunriseRet = 0;
+int mqttTopicDelSunsetRet = 0;
+int mqttTopicSystemRet = 0;
+int mqttTopicSystemUpdateRet = 0;
+int mqttTopicSystemMaxStepsRet = 0;
+int mqttTopicSystemTGKeyRet = 0;
+int mqttTopicSystemOWKeyRet = 0;
+int mqttTopicSystemServerTime1Ret = 0;
+int mqttTopicSystemServerTime2Ret = 0;
+int mqttTopicSystemTimeZoneRet = 0;
+int mqttTopicSystemCountryRet = 0;
+int mqttTopicSystemCityRet = 0;
 
 typedef struct
 {
@@ -207,7 +207,6 @@ int connect_retry = 0;
 int max_connect_retry = 10;
 int timer = 0;
 
-uint16_t max_steps = DEFAULT_MAX_STEPS;
 uint16_t calibrateCnt = 0;
 
 char *moveStatus = "stopped";
@@ -256,6 +255,7 @@ void onCalibrate()
     ESP_LOGW(tag, "CALIBRATE message received");
 
     strcpy(_status.move_status, "calibrating");
+    _status.cal_status = 0;
 
     // Публикуем топик статуса
     xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
@@ -554,10 +554,10 @@ void mqtt_start(void)
     strcat(mqttTopicDelSunset, "/delsunset");
 
     strcpy(mqttTopicDelSunrise, mqttHostname);
-    strcpy(mqttTopicSystem, mqttHostname);
-
-    strcat(mqttTopicSystem, "/system");
     strcat(mqttTopicDelSunrise, "/delsunrise");
+
+    strcpy(mqttTopicSystem, mqttHostname);
+    strcat(mqttTopicSystem, "/system");
 
     strcpy(mqttTopicSystemUpdate, mqttHostname);
     strcat(mqttTopicSystemUpdate, "/system/update");
@@ -1582,47 +1582,12 @@ void time_sync_cb(struct timeval *tv)
     };
 }
 
-/* Обработчик событий программного таймера */
-void timer_cb(TimerHandle_t pxTimer)
-{
-    unsigned long now;
-    struct tm *tm_now;
-    const char *tag = "timer_cb";
-
-    timer++;
-
-    if (time_sync)
-    {
-        now = time(NULL);
-        tm_now = localtime(&now);
-        ESP_LOGI(tag, "Time now: %lu %02d:%02d:%02d Current pos: %d Target pos: %d Length: %d",
-                 now, tm_now->tm_hour, tm_now->tm_min, tm_now->tm_sec, _status.current_pos, _status.target_pos, _status.length);
-        if (tm_now->tm_hour == 0 && tm_now->tm_min == 0 && tm_now->tm_sec == 0)
-        {
-        }
-        if (_status.onSunrise == 1 && now == _status.sunrise)
-        {
-            _status.shade = _status.shadeSunrise;
-            xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
-        }
-        if (_status.onSunset == 1 && now == _status.sunset)
-        {
-            _status.shade = _status.shadeSunset;
-            xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
-        }
-    }
-    else
-    {
-        ESP_LOGW(tag, "Time is not synchronized");
-    }
-}
-
 /* Управление вращением мотора */
 void move_task(void *param)
 {
     char *tag = "sm_move_task";
     int dir = 0;
-   
+
     _status.target_pos = (int)(_status.length * _status.shade / 100.0);
 
     if (_status.current_pos < _status.target_pos)
@@ -1658,7 +1623,7 @@ void move_task(void *param)
     if (dir != 0)
     {
         // Сигналы вращения и индикации
-        while (_status.current_pos < max_steps)
+        while (_status.current_pos < _system.max_steps)
         {
             if (dir == 1)
                 _status.current_pos++;
@@ -1704,7 +1669,7 @@ void calibrate_task(void *param)
     gpio_set_level(SM_DIR, 1);
 
     // Сигналы вращения
-    while (calibrateCnt < max_steps)
+    while (calibrateCnt < _system.max_steps)
     {
         calibrateCnt++;
 
@@ -1924,7 +1889,7 @@ void wifi_init(void)
     {
         ESP_LOGE(tag, "OTA event handler registration error: %s", esp_err_to_name(err));
     }
-
+    esp_wifi_set_ps(WIFI_PS_NONE);
     // Переводим ESP в режим STA и запускаем WiFi
     err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err == ESP_OK)
@@ -1943,6 +1908,42 @@ void wifi_init(void)
     else
     {
         ESP_LOGE(tag, "WiFi start error: %s", esp_err_to_name(err));
+    }
+}
+
+/* Обработчик событий программного таймера */
+void timer_cb(TimerHandle_t pxTimer)
+{
+    unsigned long now;
+    struct tm *tm_now;
+    const char *tag = "timer_cb";
+
+    timer++;
+
+    if (time_sync)
+    {
+        now = time(NULL);
+        tm_now = localtime(&now);
+        ESP_LOGI(tag, "Time now: %lu %02d:%02d:%02d Current pos: %d Target pos: %d Length: %d",
+                 now, tm_now->tm_hour, tm_now->tm_min, tm_now->tm_sec, _status.current_pos, _status.target_pos, _status.length);
+        if (tm_now->tm_hour == 0 && tm_now->tm_min == 0 && tm_now->tm_sec == 0)
+        {
+            xEventGroupSetBits(event_group, OW_REFRESH_BIT);
+        }
+        if (_status.onSunrise == 1 && now == _status.sunrise)
+        {
+            _status.shade = _status.shadeSunrise;
+            xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
+        }
+        if (_status.onSunset == 1 && now == _status.sunset)
+        {
+            _status.shade = _status.shadeSunset;
+            xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
+        }
+    }
+    else
+    {
+        ESP_LOGW(tag, "Time is not synchronized");
     }
 }
 
@@ -2034,7 +2035,18 @@ void app_main(void)
             _status.shadeSunset = 0;
             ESP_LOGW(tag, "Shade sunset read error (%s). Set default value: %d", esp_err_to_name(err), _status.shadeSunset);
         }
-
+        /* Читаем флаг при восходе */
+        err = nvs_get_u8(nvs_handle, "onSunset", &data8);
+        if (err == ESP_OK)
+        {
+            _status.onSunset = data8;
+            ESP_LOGI(tag, "Shade flag on sunset read success: %d", _status.onSunset);
+        }
+        else
+        {
+            _status.onSunset = 0;
+            ESP_LOGW(tag, "Shade flag on sunset read error (%s). Set default value: %d", esp_err_to_name(err), _status.onSunset);
+        }
         /* Читаем процент затемнения при закате */
         err = nvs_get_u8(nvs_handle, "shade_sunrise", &data8);
         if (err == ESP_OK)
@@ -2046,6 +2058,18 @@ void app_main(void)
         {
             _status.shadeSunrise = 0;
             ESP_LOGW(tag, "Shade sunrise read error (%s). Set default value: %d", esp_err_to_name(err), _status.shadeSunrise);
+        }
+        /* Читаем флаг при закате */
+        err = nvs_get_u8(nvs_handle, "onSunrise", &data8);
+        if (err == ESP_OK)
+        {
+            _status.onSunrise = data8;
+            ESP_LOGI(tag, "Shade flag on sunrise read success: %d", _status.onSunset);
+        }
+        else
+        {
+            _status.onSunrise = 0;
+            ESP_LOGW(tag, "Shade flag on sunrise read error (%s). Set default value: %d", esp_err_to_name(err), _status.onSunrise);
         }
         /* Читаем статус калибровки */
         err = nvs_get_u8(nvs_handle, "cal_status", &data8);
