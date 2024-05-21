@@ -61,10 +61,11 @@
 
 char *openweather_data = NULL;
 char mqttHostname[32];
+
 // const int mqttPort = 15476;
-//  const char *mqttServer = "mqtt://m9.wqtt.ru";
-//  const char *mqttUser = "u_3MLZE1";
-//  const char *mqttPass = "78C0pl7e";
+// const char *mqttServer = "mqtt://m9.wqtt.ru";
+// const char *mqttUser = "u_3MLZE1";
+// const char *mqttPass = "78C0pl7e";
 
 const int mqttPort = 1883;
 const char *mqttServer = "mqtt://192.168.68.68";
@@ -203,7 +204,7 @@ EventGroupHandle_t event_group; // Группа событий
 TaskHandle_t calibrate_task_handle;
 TaskHandle_t move_task_handle;
 TimerHandle_t _timer = NULL;
-esp_mqtt_client_handle_t mqttClient;
+esp_mqtt_client_handle_t mqttClient = NULL;
 wifi_config_t wifi_config; // Структура для хранения настроек WIFI
 
 size_t openweather_len = 0;
@@ -590,21 +591,25 @@ void mqtt_start(void)
         .broker.address.port = mqttPort,
         .credentials.authentication.password = mqttPass,
         .credentials.username = mqttUser,
-        //.credentials.client_id = mqttHostname,
         .credentials.set_null_client_id = true,
         .session.last_will.topic = mqttTopicCheckOnline,
         .session.last_will.msg = "offline",
         .session.last_will.msg_len = strlen("offline"),
         .session.last_will.qos = 0,
-        .session.last_will.retain = 0,
+        .session.last_will.retain = 1,
+        .session.disable_keepalive = true,
+        //.network.refresh_connection_after_ms = 60000,
 
     };
 
     mqttClient = esp_mqtt_client_init(&mqtt_cfg);
-    esp_mqtt_client_register_event(mqttClient, ESP_EVENT_ANY_ID, mqtt_event_handler, mqttClient);
-    esp_mqtt_client_start(mqttClient);
+    if (mqttClient != NULL)
+    {
+        esp_mqtt_client_register_event(mqttClient, ESP_EVENT_ANY_ID, mqtt_event_handler, mqttClient);
+        esp_mqtt_client_start(mqttClient);
 
-    ESP_LOGI(tag, "MQTT start. Hostname: %s", mqttHostname);
+        ESP_LOGI(tag, "MQTT start. Hostname: %s", mqttHostname);
+    }
 }
 
 /* Функция обработчик сообщений MQTT */
@@ -613,7 +618,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
     char *tag = "mqtt_event";
     ESP_LOGI(tag, "Event dispatched from event loop base=%s, event_id=%d", base, (int)event_id);
     esp_mqtt_event_handle_t event = event_data;
-    // mqttClient = event->client;
+    esp_mqtt_client_handle_t client = event->client;
     int msg_id;
     switch ((esp_mqtt_event_id_t)event_id)
     {
@@ -626,61 +631,61 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
 
         mqttConnected = true;
         // Публикуем состояние и подписываемся на топики
-        msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicCheckOnline, "online", 0, mqttTopicCheckOnlineQoS, mqttTopicCheckOnlinetRet);
+        msg_id = esp_mqtt_client_publish(client, mqttTopicCheckOnline, "online", 0, mqttTopicCheckOnlineQoS, mqttTopicCheckOnlinetRet);
         ESP_LOGI(tag, "MQTT topic %s publish success, msg_id=%d", mqttTopicCheckOnline, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicAddSunrise, mqttTopicAddSunriseQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicAddSunrise, mqttTopicAddSunriseQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddSunrise, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicAddSunset, mqttTopicAddSunsetQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicAddSunset, mqttTopicAddSunsetQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddSunset, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicAddTimer, mqttTopicAddTimerQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicAddTimer, mqttTopicAddTimerQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddTimer, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicStatus, mqttTopicStatusQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicStatus, mqttTopicStatusQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicStatus, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicTimers, mqttTopicTimersQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicTimers, mqttTopicTimersQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicTimers, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicControl, mqttTopicControlQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicControl, mqttTopicControlQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicControl, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicDelSunrise, mqttTopicDelSunriseQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicDelSunrise, mqttTopicDelSunriseQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicDelSunrise, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicDelSunset, mqttTopicDelSunsetQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicDelSunset, mqttTopicDelSunsetQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicDelSunset, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystem, mqttTopicSystemQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicSystem, mqttTopicSystemQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystem, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemOWKey, mqttTopicSystemOWKeyQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicSystemOWKey, mqttTopicSystemOWKeyQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemOWKey, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemTGKey, mqttTopicSystemTGKeyQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicSystemTGKey, mqttTopicSystemTGKeyQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemTGKey, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemMaxSteps, mqttTopicSystemMaxStepsQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicSystemMaxSteps, mqttTopicSystemMaxStepsQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemMaxSteps, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemUpdate, mqttTopicSystemUpdateQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicSystemUpdate, mqttTopicSystemUpdateQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemUpdate, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemServerTime1, mqttTopicSystemServerTime1QoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicSystemServerTime1, mqttTopicSystemServerTime1QoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemServerTime1, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemServerTime2, mqttTopicSystemServerTime2QoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicSystemServerTime2, mqttTopicSystemServerTime2QoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemServerTime2, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemTimeZone, mqttTopicSystemTimeZoneQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicSystemTimeZone, mqttTopicSystemTimeZoneQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemTimeZone, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemCity, mqttTopicSystemCityQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicSystemCity, mqttTopicSystemCityQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemCity, msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(mqttClient, mqttTopicSystemCountry, mqttTopicSystemCountryQoS);
+        msg_id = esp_mqtt_client_subscribe(client, mqttTopicSystemCountry, mqttTopicSystemCountryQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicSystemCountry, msg_id);
 
         break;
@@ -1318,7 +1323,7 @@ void topic_publish_task(void *param)
         {
             str = mqttSystemJson(_system);
             ESP_LOGI(tag, "System topic: %s", str);
-            if (mqttConnected)
+            if (mqttConnected && mqttClient != NULL)
             {
                 int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
                 ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
@@ -1328,7 +1333,7 @@ void topic_publish_task(void *param)
         {
             str = mqttStatusJson(_status);
             ESP_LOGI(tag, "Status topic: %s", str);
-            if (mqttConnected)
+            if (mqttConnected && mqttClient != NULL)
             {
                 int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, str, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
                 ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, str);
