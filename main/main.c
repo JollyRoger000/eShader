@@ -61,10 +61,15 @@
 
 char *openweather_data = NULL;
 char mqttHostname[32];
-const int mqttPort = 15476;
-const char *mqttServer = "mqtt://m9.wqtt.ru";
-const char *mqttUser = "u_3MLZE1";
-const char *mqttPass = "78C0pl7e";
+// const int mqttPort = 15476;
+//  const char *mqttServer = "mqtt://m9.wqtt.ru";
+//  const char *mqttUser = "u_3MLZE1";
+//  const char *mqttPass = "78C0pl7e";
+
+const int mqttPort = 1883;
+const char *mqttServer = "mqtt://192.168.68.68";
+const char *mqttUser = "";
+const char *mqttPass = "";
 
 // const int mqttPort = 10528;
 // const char *mqttServer = "mqtt://m5.wqtt.ru";
@@ -518,12 +523,6 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
 void mqtt_start(void)
 {
     char *tag = "mqtt_start";
-    const esp_mqtt_client_config_t mqtt_cfg = {
-        .broker.address.uri = mqttServer,
-        .broker.address.port = mqttPort,
-        .credentials.authentication.password = mqttPass,
-        .credentials.username = mqttUser,
-    };
 
     uint8_t mac[6];
     ESP_ERROR_CHECK(esp_efuse_mac_get_default(mac));
@@ -586,8 +585,23 @@ void mqtt_start(void)
     strcpy(mqttTopicSystemCountry, mqttHostname);
     strcat(mqttTopicSystemCountry, "/system/country");
 
+    const esp_mqtt_client_config_t mqtt_cfg = {
+        .broker.address.uri = mqttServer,
+        .broker.address.port = mqttPort,
+        .credentials.authentication.password = mqttPass,
+        .credentials.username = mqttUser,
+        //.credentials.client_id = mqttHostname,
+        .credentials.set_null_client_id = true,
+        .session.last_will.topic = mqttTopicCheckOnline,
+        .session.last_will.msg = "offline",
+        .session.last_will.msg_len = strlen("offline"),
+        .session.last_will.qos = 0,
+        .session.last_will.retain = 0,
+
+    };
+
     mqttClient = esp_mqtt_client_init(&mqtt_cfg);
-    esp_mqtt_client_register_event(mqttClient, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+    esp_mqtt_client_register_event(mqttClient, ESP_EVENT_ANY_ID, mqtt_event_handler, mqttClient);
     esp_mqtt_client_start(mqttClient);
 
     ESP_LOGI(tag, "MQTT start. Hostname: %s", mqttHostname);
@@ -597,7 +611,7 @@ void mqtt_start(void)
 void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     char *tag = "mqtt_event";
-    // ESP_LOGI(tag, "Event dispatched from event loop base=%s, event_id=%d", base, event_id);
+    ESP_LOGI(tag, "Event dispatched from event loop base=%s, event_id=%d", base, (int)event_id);
     esp_mqtt_event_handle_t event = event_data;
     // mqttClient = event->client;
     int msg_id;
