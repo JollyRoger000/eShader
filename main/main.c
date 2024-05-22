@@ -141,15 +141,18 @@ int mqttTopicSystemCityRet = 0;
 
 typedef struct
 {
-    time_t sunrise; // В UNIX формате
-    time_t sunset;  // В UNIX формате
-    char str_sunrise[10];
-    char str_sunset[10];
-    char last_updated[20];
-    uint8_t onSunrise;
-    uint8_t onSunset;
-    uint8_t shadeSunrise;
-    uint8_t shadeSunset;
+    time_t current_time_unix; // В UNIX формате
+    time_t sunrise_time_unix; // В UNIX формате
+    time_t sunset_time_unix;  // В UNIX формате
+    char current_time[20];
+    char sunrise_time[10];
+    char sunset_time[10];
+    char last_ow_updated[20];
+    char last_started[20];
+    uint8_t on_sunrise;
+    uint8_t on_sunset;
+    uint8_t shade_sunrise;
+    uint8_t shade_sunset;
     char move_status[16];
     uint8_t shade;
     uint8_t cal_status;
@@ -159,10 +162,10 @@ typedef struct
 } StatusStruct;
 
 StatusStruct _status = {
-    .onSunrise = 0,
-    .onSunset = 0,
-    .shadeSunrise = 0,
-    .shadeSunset = 0,
+    .on_sunrise = 0,
+    .on_sunset = 0,
+    .shade_sunrise = 0,
+    .shade_sunset = 0,
     .shade = 0,
     .move_status = "stopped",
     .cal_status = 0,
@@ -183,7 +186,9 @@ typedef struct
     char time_server1[50];
     char time_server2[50];
     char last_updated[50];
-    char last_started[50];
+    char ssid[32];
+    char password[64];
+    char ip[20];
 } SystemStruct;
 
 SystemStruct _system = {
@@ -196,14 +201,14 @@ SystemStruct _system = {
     .timezone = DEFAULT_TZ,
     .time_server1 = DEFAULT_TIME_SERVER1,
     .time_server2 = DEFAULT_TIME_SERVER2,
-    .last_started = "",
     .last_updated = "no_updated",
 };
 
 EventGroupHandle_t event_group; // Группа событий
 TaskHandle_t calibrate_task_handle;
 TaskHandle_t move_task_handle;
-TimerHandle_t _timer = NULL;
+TimerHandle_t timer_1s_handle = NULL;
+TimerHandle_t timer_1m_handle = NULL;
 esp_mqtt_client_handle_t mqttClient = NULL;
 wifi_config_t wifi_config; // Структура для хранения настроек WIFI
 
@@ -228,7 +233,8 @@ bool owConnected = false;
 void mqtt_start(void);
 void time_sync_start(const char *tz);
 void time_sync_cb(struct timeval *tv);
-void timer_cb(TimerHandle_t pxTimer);
+void timer_1s_cb(TimerHandle_t pxTimer);
+void timer_1m_cb(TimerHandle_t pxTimer);
 void onCalibrate();
 void onStop();
 void onShade(int shade);
@@ -350,18 +356,21 @@ char *mqttStatusJson(StatusStruct s)
 {
     cJSON *json = cJSON_CreateObject();
 
-    cJSON_AddStringToObject(json, "sunrise", s.str_sunrise);
-    cJSON_AddStringToObject(json, "sunset", s.str_sunset);
-    cJSON_AddNumberToObject(json, "shadeSunrise", s.shadeSunrise);
-    cJSON_AddNumberToObject(json, "shadeSunset", s.shadeSunset);
-    cJSON_AddNumberToObject(json, "onSunrise", s.onSunrise);
-    cJSON_AddNumberToObject(json, "onSunset", s.onSunset);
+    cJSON_AddStringToObject(json, "local_time", s.current_time);
+    cJSON_AddStringToObject(json, "last_started", s.last_started);
+    cJSON_AddStringToObject(json, "last_ow_updated", s.last_ow_updated);
+    cJSON_AddStringToObject(json, "sunrise_time", s.sunrise_time);
+    cJSON_AddStringToObject(json, "sunset_time", s.sunset_time);
+    cJSON_AddNumberToObject(json, "shade_on_sunrise", s.shade_sunrise);
+    cJSON_AddNumberToObject(json, "shade_on_sunset", s.shade_sunset);
+    cJSON_AddNumberToObject(json, "on_sunrise", s.on_sunrise);
+    cJSON_AddNumberToObject(json, "on_sunset", s.on_sunset);
     cJSON_AddNumberToObject(json, "cal_status", s.cal_status);
     cJSON_AddNumberToObject(json, "length", s.length);
-    cJSON_AddNumberToObject(json, "shade", s.shade);
     cJSON_AddStringToObject(json, "move_status", s.move_status);
-    cJSON_AddNumberToObject(json, "target_pos", s.target_pos);
+    cJSON_AddNumberToObject(json, "current_shade", s.shade);
     cJSON_AddNumberToObject(json, "current_pos", s.current_pos);
+    cJSON_AddNumberToObject(json, "target_pos", s.target_pos);
 
     char *string = cJSON_Print(json);
 
@@ -374,6 +383,11 @@ char *mqttSystemJson(SystemStruct s)
 {
     cJSON *json = cJSON_CreateObject();
 
+
+    cJSON_AddStringToObject(json, "ssid", s.ssid);
+    cJSON_AddStringToObject(json, "password", s.password);
+    cJSON_AddStringToObject(json, "local ip", s.ip);
+
     cJSON_AddNumberToObject(json, "max_steps", s.max_steps);
     cJSON_AddStringToObject(json, "country", s.country);
     cJSON_AddStringToObject(json, "city", s.city);
@@ -382,8 +396,7 @@ char *mqttSystemJson(SystemStruct s)
     cJSON_AddStringToObject(json, "time_server2", s.time_server2);
     cJSON_AddStringToObject(json, "ow_key", s.ow_key);
     cJSON_AddStringToObject(json, "tg_key", s.tg_key);
-    cJSON_AddStringToObject(json, "last_started", s.last_started);
-    cJSON_AddStringToObject(json, "last_updated", s.last_updated);
+    cJSON_AddStringToObject(json, "last_system_updated", s.last_updated);
     cJSON_AddStringToObject(json, "update_url", s.update_url);
 
     char *string = cJSON_Print(json);
@@ -502,16 +515,11 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
         ESP_LOGI(tag, "OpenWeatherAPI received data: %s", openweather_data);
 
         /* Выделяем из ответа время заката/восхода, преобразуем в JSON и публикуем */
-        if (get_sunrise_sunset(openweather_data))
-        {
-            // Публикуем топик статуса
-            xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
-            free(openweather_data);
-        }
-        else
+        if (!get_sunrise_sunset(openweather_data))
         {
             ESP_LOGE(tag, "get_sunrise_sunset error");
         }
+        free(openweather_data);
         break;
 
     default:
@@ -589,16 +597,15 @@ void mqtt_start(void)
     const esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = mqttServer,
         .broker.address.port = mqttPort,
+        .network.disable_auto_reconnect = true,
         .credentials.authentication.password = mqttPass,
         .credentials.username = mqttUser,
         .credentials.set_null_client_id = true,
         .session.last_will.topic = mqttTopicCheckOnline,
         .session.last_will.msg = "offline",
         .session.last_will.msg_len = strlen("offline"),
-        .session.last_will.qos = 0,
-        .session.last_will.retain = 1,
-        .session.disable_keepalive = true,
-        //.network.refresh_connection_after_ms = 60000,
+        .session.last_will.qos = 1,
+        .session.last_will.retain = true,
 
     };
 
@@ -616,10 +623,12 @@ void mqtt_start(void)
 void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
     char *tag = "mqtt_event";
-    ESP_LOGI(tag, "Event dispatched from event loop base=%s, event_id=%d", base, (int)event_id);
+    ESP_LOGI(tag, "Event dispatched from event loop base=%s, event_id=%" PRIi32, base, event_id);
     esp_mqtt_event_handle_t event = event_data;
     esp_mqtt_client_handle_t client = event->client;
     int msg_id;
+
+    ESP_LOGI(tag, "free heap size is %" PRIu32 ", minimum %" PRIu32, esp_get_free_heap_size(), esp_get_minimum_free_heap_size());
     switch ((esp_mqtt_event_id_t)event_id)
     {
     case MQTT_EVENT_BEFORE_CONNECT:
@@ -630,9 +639,16 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
         ESP_LOGI(tag, "MQTT_EVENT_CONNECTED");
 
         mqttConnected = true;
+
         // Публикуем состояние и подписываемся на топики
         msg_id = esp_mqtt_client_publish(client, mqttTopicCheckOnline, "online", 0, mqttTopicCheckOnlineQoS, mqttTopicCheckOnlinetRet);
         ESP_LOGI(tag, "MQTT topic %s publish success, msg_id=%d", mqttTopicCheckOnline, msg_id);
+
+        msg_id = esp_mqtt_client_publish(client, mqttTopicSystem, mqttTopicSystem, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
+        ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, mqttSystemJson(_system));
+
+        msg_id = esp_mqtt_client_publish(client, mqttTopicStatus, mqttTopicStatus, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
+        ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, mqttStatusJson(_status));
 
         msg_id = esp_mqtt_client_subscribe(client, mqttTopicAddSunrise, mqttTopicAddSunriseQoS);
         ESP_LOGI(tag, "MQTT topic %s subscribe success, msg_id=%d", mqttTopicAddSunrise, msg_id);
@@ -735,51 +751,51 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
         // Топик добавления таймера при закате
         if (!strcmp(topic, mqttTopicAddSunrise))
         {
-            _status.onSunrise = 1;
-            _status.shadeSunrise = atoi(data);
-            ESP_LOGW(tag, "Add sunrise topic received. Set shade on sunrise: %d", _status.shadeSunrise);
+            _status.on_sunrise = 1;
+            _status.shade_sunrise = atoi(data);
+            ESP_LOGW(tag, "Add sunrise topic received. Set shade on sunrise: %d", _status.shade_sunrise);
 
             // Публикуем топик статуса
             xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
 
-            nvs_write_u8("shade_sunrise", _status.shadeSunrise);
-            nvs_write_u8("onSunrise", _status.onSunrise);
+            nvs_write_u8("shade_sunrise", _status.shade_sunrise);
+            nvs_write_u8("on_sunrise", _status.on_sunrise);
         }
 
         // Топик добавления таймера при восходе
         if (!strcmp(topic, mqttTopicAddSunset))
         {
-            _status.onSunset = 1;
-            _status.shadeSunset = atoi(data);
-            ESP_LOGW(tag, "Add sunset topic received. Set shade on sunset: %d", _status.shadeSunset);
+            _status.on_sunset = 1;
+            _status.shade_sunset = atoi(data);
+            ESP_LOGW(tag, "Add sunset topic received. Set shade on sunset: %d", _status.shade_sunset);
 
             // Публикуем топик статуса
             xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
 
-            nvs_write_u8("shade_sunset", _status.shadeSunset);
-            nvs_write_u8("onSunset", _status.onSunset);
+            nvs_write_u8("shade_sunset", _status.shade_sunset);
+            nvs_write_u8("on_sunset", _status.on_sunset);
         }
 
         // Топик удаления таймера при закате
         if (!strcmp(topic, mqttTopicDelSunrise))
         {
-            _status.onSunrise = 0;
+            _status.on_sunrise = 0;
             ESP_LOGW(tag, "Delete sunrise topic received");
 
             // Публикуем топик статуса
             xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
-            nvs_write_u8("onSunrise", _status.onSunrise);
+            nvs_write_u8("on_sunrise", _status.on_sunrise);
         }
 
         // Топик удаления таймера при восходе
         if (!strcmp(topic, mqttTopicDelSunset))
         {
-            _status.onSunset = 0;
+            _status.on_sunset = 0;
             ESP_LOGW(tag, "Delete sunset topic received");
 
             // Публикуем топик статуса
             xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
-            nvs_write_u8("onSunset", _status.onSunset);
+            nvs_write_u8("on_sunset", _status.on_sunset);
         }
 
         // Топик управления устройством
@@ -898,7 +914,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
 
             // Все выключаем
-            xTimerStop(_timer, 0);
+            xTimerStop(timer_1s_handle, 0);
 
             // Запускаем обновление
             xTaskCreate(&ota_task, "ota_task", 4096, NULL, 3, NULL);
@@ -1048,7 +1064,6 @@ void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id
 void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     const char *tag = "ip_event_handler";
-    esp_err_t err;
 
     if (event_base == IP_EVENT)
     {
@@ -1095,14 +1110,10 @@ void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, 
         case SC_EVENT_GOT_SSID_PSWD:
             smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
 
-            char ssid[33] = {0};
-            char password[65] = {0};
             uint8_t rvd_data[33] = {0};
 
             bzero(&wifi_config, sizeof(wifi_config_t));
-            /* Копируем полученное имя сети в структуру wifi_config */
             memcpy(wifi_config.sta.ssid, evt->ssid, sizeof(wifi_config.sta.ssid));
-            /* Копируем полученный пароль в структуру wifi_config  */
             memcpy(wifi_config.sta.password, evt->password, sizeof(wifi_config.sta.password));
             wifi_config.sta.bssid_set = evt->bssid_set;
             if (wifi_config.sta.bssid_set == true)
@@ -1110,11 +1121,11 @@ void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, 
                 memcpy(wifi_config.sta.bssid, evt->bssid, sizeof(wifi_config.sta.bssid));
             }
 
-            memcpy(ssid, evt->ssid, sizeof(evt->ssid));
-            memcpy(password, evt->password, sizeof(evt->password));
-            nvs_write_str("ssid", ssid);
-            nvs_write_str("pass", password);
-            ESP_LOGI(tag, "Smartconfig got SSID and password. SSID: %s Pass: %s", ssid, password);
+            memcpy(_system.ssid, evt->ssid, sizeof(_system.ssid));
+            memcpy(_system.password, evt->password, sizeof(_system.password));
+            nvs_write_str("ssid", _system.ssid);
+            nvs_write_str("pass", _system.password);
+            ESP_LOGI(tag, "Smartconfig got SSID and password. SSID: %s Pass: %s", _system.ssid, _system.password);
             ssid_loaded = true;
             password_loaded = true;
 
@@ -1277,25 +1288,25 @@ bool get_sunrise_sunset(const char *json_string)
     if (cod == 200)
     {
         // Читаем timezone, sunset, sunrise в UNIX формате
-        _status.sunrise = cJSON_GetObjectItemCaseSensitive(sys, "sunrise")->valueint;
-        _status.sunset = cJSON_GetObjectItemCaseSensitive(sys, "sunset")->valueint;
+        _status.sunrise_time_unix = cJSON_GetObjectItemCaseSensitive(sys, "sunrise")->valueint;
+        _status.sunset_time_unix = cJSON_GetObjectItemCaseSensitive(sys, "sunset")->valueint;
 
         // Переводим из UNIX формата в читаемый
         struct tm *tm_sunrise;
-        tm_sunrise = localtime(&_status.sunrise);
-        strftime(_status.str_sunrise, sizeof(_status.str_sunrise), "%H:%M:%S", tm_sunrise);
-        ESP_LOGI(tag, "Time sunrise: %s", _status.str_sunrise);
+        tm_sunrise = localtime(&_status.sunrise_time_unix);
+        strftime(_status.sunrise_time, sizeof(_status.sunrise_time), "%H:%M:%S", tm_sunrise);
+        ESP_LOGI(tag, "Time sunrise: %s", _status.sunrise_time);
 
         struct tm *tm_sunset;
-        tm_sunset = localtime(&_status.sunset);
-        strftime(_status.str_sunset, sizeof(_status.str_sunset), "%H:%M:%S", tm_sunset);
-        ESP_LOGI(tag, "Time sunset: %s", _status.str_sunset);
+        tm_sunset = localtime(&_status.sunset_time_unix);
+        strftime(_status.sunset_time, sizeof(_status.sunset_time), "%H:%M:%S", tm_sunset);
+        ESP_LOGI(tag, "Time sunset: %s", _status.sunset_time);
 
         struct tm *tm_now;
         time_t now = time(NULL);
         tm_now = localtime(&now);
-        strftime(_status.last_updated, sizeof(_status.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
-        ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_updated);
+        strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
+        ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_ow_updated);
         return true;
     }
     else
@@ -1574,24 +1585,18 @@ void time_sync_cb(struct timeval *tv)
     ESP_LOGI(tag, "Time synchronization callback");
 
     //  Получаем текущее время
-    time_t now = time(NULL);
-    struct tm *tm = localtime(&now);
-    if (tm->tm_year < (1970 - 1900))
+    _status.current_time_unix = time(NULL);
+    struct tm *tm_now = localtime(&_status.current_time_unix);
+    if (tm_now->tm_year < (1970 - 1900))
     {
         ESP_LOGE(tag, "Time synchronization failed!");
         time_sync = false;
     }
     else
     {
-        snprintf(_system.last_started, sizeof(_system.last_started), "%02d:%02d:%02d %02d.%02d.%04d", tm->tm_hour, tm->tm_min, tm->tm_sec,
-                 tm->tm_mday, tm->tm_mon + 1, tm->tm_year + 1900);
-        ESP_LOGI(tag, "Time sync completed, current time: %s", _system.last_started);
+        strftime(_status.last_started, sizeof(_status.last_started), "%d.%m.%Y %H:%M:%S", tm_now);
+        ESP_LOGI(tag, "Time sync completed, current time: %s", _status.last_started);
 
-        // Запускаем программный таймер с периодом 1 секунда
-        if (xTimerStart(_timer, 0) == pdPASS)
-        {
-            ESP_LOGI(tag, "Timer started...");
-        }
         time_sync = true;
 
         // Запускаем запрос данных openweather
@@ -1930,33 +1935,36 @@ void wifi_init(void)
     }
 }
 
-/* Обработчик событий программного таймера */
-void timer_cb(TimerHandle_t pxTimer)
+/* Обработчик событий программного таймера c периодоим 1 секунда */
+void timer_1s_cb(TimerHandle_t pxTimer)
 {
-    unsigned long now;
     struct tm *tm_now;
-    const char *tag = "timer_cb";
-
-    timer++;
+    const char *tag = "timer_1s_cb";
 
     if (time_sync)
     {
-        now = time(NULL);
-        tm_now = localtime(&now);
-        ESP_LOGI(tag, "Time now: %lu %02d:%02d:%02d Current pos: %d Target pos: %d Length: %d",
-                 now, tm_now->tm_hour, tm_now->tm_min, tm_now->tm_sec, _status.current_pos, _status.target_pos, _status.length);
+        _status.current_time_unix++;
+
+        // Получаем текущую дату и время и записываем в структуру статуса
+        tm_now = localtime(&_status.current_time_unix);
+        strftime(_status.current_time, sizeof(_status.current_time), "%d.%m.%Y %H:%M:%S", tm_now);
+        ESP_LOGI(tag, "Time now: %lu %s Current pos: %d Target pos: %d Length: %d",
+                 (unsigned long)_status.current_time_unix, _status.current_time, _status.current_pos, _status.target_pos, _status.length);
+
+        // Обновляем запрос времени восходя/заката в полночь
         if (tm_now->tm_hour == 0 && tm_now->tm_min == 0 && tm_now->tm_sec == 0)
         {
             xEventGroupSetBits(event_group, OW_REFRESH_BIT);
+            strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
         }
-        if (_status.onSunrise == 1 && now == _status.sunrise)
+        if (_status.on_sunrise == 1 && _status.current_time_unix == _status.sunrise_time_unix)
         {
-            _status.shade = _status.shadeSunrise;
+            _status.shade = _status.shade_sunrise;
             xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
         }
-        if (_status.onSunset == 1 && now == _status.sunset)
+        if (_status.on_sunset == 1 && _status.current_time_unix == _status.sunset_time_unix)
         {
-            _status.shade = _status.shadeSunset;
+            _status.shade = _status.shade_sunset;
             xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
         }
     }
@@ -1966,13 +1974,21 @@ void timer_cb(TimerHandle_t pxTimer)
     }
 }
 
+/* Обработчик событий программного таймера c периодоим 1 минута */
+void timer_1m_cb(TimerHandle_t pxTimer)
+{
+    const char *tag = "timer_1m_cb";
+
+    if (mqttClient != NULL)
+    {
+        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicCheckOnline, "online", 0, mqttTopicCheckOnlineQoS, mqttTopicCheckOnlinetRet);
+        ESP_LOGI(tag, "MQTT topic %s publish success, msg_id=%d", mqttTopicCheckOnline, msg_id);
+    }
+}
+
 void app_main(void)
 {
     char *tag = "main";
-
-    // event_group = xEventGroupCreate(); // Создаем группу событий
-    // esp_netif_init();                  // Инициализируем стек протоколов TCP/IP lwIP (Lightweight IP)
-    // esp_event_loop_create_default();   // Создаем системный цикл событий
 
     // Инициализация сигналов управления мотором и светодиодом на выход
     gpio_set_direction(SM_DIR, GPIO_MODE_OUTPUT);
@@ -2015,6 +2031,7 @@ void app_main(void)
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "ssid", str, &size);
             memcpy(wifi_config.sta.ssid, str, size);
+            memcpy(_system.ssid, str, size);
             ESP_LOGI(tag, "SSID reading success: %s", wifi_config.sta.ssid);
             ssid_loaded = true;
         }
@@ -2031,6 +2048,7 @@ void app_main(void)
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "pass", str, &size);
             memcpy(wifi_config.sta.password, str, size);
+            memcpy(_system.password, str, size);
             ESP_LOGI(tag, "Password reading success: %s", wifi_config.sta.password);
             password_loaded = true;
         }
@@ -2046,49 +2064,49 @@ void app_main(void)
         err = nvs_get_u8(nvs_handle, "shade_sunset", &data8);
         if (err == ESP_OK)
         {
-            _status.shadeSunset = data8;
-            ESP_LOGI(tag, "Shade sunset read success: %d", _status.shadeSunset);
+            _status.shade_sunset = data8;
+            ESP_LOGI(tag, "Shade sunset read success: %d", _status.shade_sunset);
         }
         else
         {
-            _status.shadeSunset = 0;
-            ESP_LOGW(tag, "Shade sunset read error (%s). Set default value: %d", esp_err_to_name(err), _status.shadeSunset);
+            _status.shade_sunset = 0;
+            ESP_LOGW(tag, "Shade sunset read error (%s). Set default value: %d", esp_err_to_name(err), _status.shade_sunset);
         }
         /* Читаем флаг при восходе */
-        err = nvs_get_u8(nvs_handle, "onSunset", &data8);
+        err = nvs_get_u8(nvs_handle, "on_sunset", &data8);
         if (err == ESP_OK)
         {
-            _status.onSunset = data8;
-            ESP_LOGI(tag, "Shade flag on sunset read success: %d", _status.onSunset);
+            _status.on_sunset = data8;
+            ESP_LOGI(tag, "Shade flag on sunset read success: %d", _status.on_sunset);
         }
         else
         {
-            _status.onSunset = 0;
-            ESP_LOGW(tag, "Shade flag on sunset read error (%s). Set default value: %d", esp_err_to_name(err), _status.onSunset);
+            _status.on_sunset = 0;
+            ESP_LOGW(tag, "Shade flag on sunset read error (%s). Set default value: %d", esp_err_to_name(err), _status.on_sunset);
         }
         /* Читаем процент затемнения при закате */
         err = nvs_get_u8(nvs_handle, "shade_sunrise", &data8);
         if (err == ESP_OK)
         {
-            _status.shadeSunrise = data8;
-            ESP_LOGI(tag, "Shade sunrise read success: %d", _status.shadeSunrise);
+            _status.shade_sunrise = data8;
+            ESP_LOGI(tag, "Shade sunrise read success: %d", _status.shade_sunrise);
         }
         else
         {
-            _status.shadeSunrise = 0;
-            ESP_LOGW(tag, "Shade sunrise read error (%s). Set default value: %d", esp_err_to_name(err), _status.shadeSunrise);
+            _status.shade_sunrise = 0;
+            ESP_LOGW(tag, "Shade sunrise read error (%s). Set default value: %d", esp_err_to_name(err), _status.shade_sunrise);
         }
         /* Читаем флаг при закате */
-        err = nvs_get_u8(nvs_handle, "onSunrise", &data8);
+        err = nvs_get_u8(nvs_handle, "on_sunrise", &data8);
         if (err == ESP_OK)
         {
-            _status.onSunrise = data8;
-            ESP_LOGI(tag, "Shade flag on sunrise read success: %d", _status.onSunset);
+            _status.on_sunrise = data8;
+            ESP_LOGI(tag, "Shade flag on sunrise read success: %d", _status.on_sunset);
         }
         else
         {
-            _status.onSunrise = 0;
-            ESP_LOGW(tag, "Shade flag on sunrise read error (%s). Set default value: %d", esp_err_to_name(err), _status.onSunrise);
+            _status.on_sunrise = 0;
+            ESP_LOGW(tag, "Shade flag on sunrise read error (%s). Set default value: %d", esp_err_to_name(err), _status.on_sunrise);
         }
         /* Читаем статус калибровки */
         err = nvs_get_u8(nvs_handle, "cal_status", &data8);
@@ -2100,7 +2118,7 @@ void app_main(void)
         else
         {
             _status.cal_status = 0;
-            ESP_LOGW(tag, "Calibrate status read error (%s). Set default value: %d", esp_err_to_name(err), _status.shadeSunrise);
+            ESP_LOGW(tag, "Calibrate status read error (%s). Set default value: %d", esp_err_to_name(err), _status.shade_sunrise);
         }
         /* Читаем длину шторы */
         err = nvs_get_u16(nvs_handle, "length", &data16);
@@ -2282,17 +2300,19 @@ void app_main(void)
     else
     {
         ESP_LOGE(tag, "NVS storage open error (%s)", esp_err_to_name(err));
-        _status.shadeSunrise = 0;
-        _status.shadeSunset = 0;
-        _status.onSunrise = 0;
-        _status.onSunset = 0;
+        _status.shade_sunrise = 0;
+        _status.shade_sunset = 0;
+        _status.on_sunrise = 0;
+        _status.on_sunset = 0;
     }
 
     /*
     char ssid[32] = "mywifi";
-    char pass[32] = "mypass123";
+    char pass[64] = "mypass123";
     memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
     memcpy(wifi_config.sta.password, pass, sizeof(wifi_config.sta.ssid));
+    memcpy(_system.ssid, ssid, sizeof(_system.ssid));
+    memcpy(_system.password, pass, sizeof(_system.password));
     password_loaded = true;
     ssid_loaded = true;
     */
@@ -2301,6 +2321,8 @@ void app_main(void)
     // char pass[32] = "audia3o765km190rus";
     // memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
     // memcpy(wifi_config.sta.password, pass, sizeof(wifi_config.sta.ssid));
+    // memcpy(_system.ssid, ssid, sizeof(_system.ssid));
+    // memcpy(_system.password, pass, sizeof(_system.password));
     // password_loaded = true;
     // ssid_loaded = true;
 
@@ -2312,10 +2334,29 @@ void app_main(void)
     xTaskCreate(topic_publish_task, "topic_publish_task", 4096, NULL, 3, NULL);
 
     // Создаем программный таймер с периодом 1 секунда
-    _timer = xTimerCreate(
-        "Timer",
+    timer_1s_handle = xTimerCreate(
+        "Timer_1s",
         pdMS_TO_TICKS(1000),
         pdTRUE,
         NULL,
-        timer_cb);
+        timer_1s_cb);
+
+    // Создаем программный таймер с периодом 1 минута для периодической отправки статуса соединения
+    timer_1m_handle = xTimerCreate(
+        "Timer_1m",
+        pdMS_TO_TICKS(60000),
+        pdTRUE,
+        NULL,
+        timer_1m_cb);
+
+    // Запускаем таймеры
+    if (xTimerStart(timer_1s_handle, 0) == pdPASS)
+    {
+        ESP_LOGI(tag, "1 second timer started...");
+    }
+
+    if (xTimerStart(timer_1m_handle, 0) == pdPASS)
+    {
+        ESP_LOGI(tag, "1 minute timer started...");
+    }
 }
