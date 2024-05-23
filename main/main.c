@@ -605,8 +605,8 @@ void mqtt_start(void)
         .session.last_will.msg_len = strlen("offline"),
         .session.last_will.qos = 1,
         .session.last_will.retain = true,
-        //        .session.keepalive = 60,
-        .network.refresh_connection_after_ms = 60000,
+        .session.disable_keepalive = true,
+        .network.refresh_connection_after_ms = 600000,
 
     };
 
@@ -640,6 +640,9 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
         ESP_LOGI(tag, "MQTT_EVENT_CONNECTED");
 
         mqttConnected = true;
+
+        struct tm *tm_now = localtime(&_status.current_time_unix);
+        strftime(_status.current_time, sizeof(_status.current_time), "%d.%m.%Y %H:%M:%S", tm_now);
 
         // Публикуем состояние и подписываемся на топики
         msg_id = esp_mqtt_client_publish(client, mqttTopicCheckOnline, "online", 0, mqttTopicCheckOnlineQoS, mqttTopicCheckOnlinetRet);
