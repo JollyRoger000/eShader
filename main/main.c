@@ -72,11 +72,6 @@ const char *mqttServer = "mqtt://192.168.68.68";
 const char *mqttUser = "";
 const char *mqttPass = "";
 
-// const int mqttPort = 10528;
-// const char *mqttServer = "mqtt://m5.wqtt.ru";
-// const char *mqttUser = "u_6V43IR";
-// const char *mqttPass = "S6F1CdP0";
-
 char mqttTopicCheckOnline[50];
 char mqttTopicControl[50];
 char mqttTopicStatus[256];
@@ -207,8 +202,8 @@ SystemStruct _system = {
 EventGroupHandle_t event_group; // Группа событий
 TaskHandle_t calibrate_task_handle;
 TaskHandle_t move_task_handle;
-TimerHandle_t timer_1s_handle = NULL;
-TimerHandle_t timer_1m_handle = NULL;
+TimerHandle_t timer1_handle = NULL;
+TimerHandle_t timer2_handle = NULL;
 esp_mqtt_client_handle_t mqttClient = NULL;
 wifi_config_t wifi_config; // Структура для хранения настроек WIFI
 
@@ -233,8 +228,8 @@ bool owConnected = false;
 void mqtt_start(void);
 void time_sync_start(const char *tz);
 void time_sync_cb(struct timeval *tv);
-void timer_1s_cb(TimerHandle_t pxTimer);
-void timer_1m_cb(TimerHandle_t pxTimer);
+void timer1_cb(TimerHandle_t pxTimer);
+void timer2_cb(TimerHandle_t pxTimer);
 void onCalibrate();
 void onStop();
 void onShade(int shade);
@@ -348,7 +343,7 @@ void time_sync_start(const char *tz)
     sntp_setservername(0, _system.time_server1);
     sntp_setservername(1, _system.time_server2);
     sntp_set_time_sync_notification_cb(time_sync_cb);
-    sntp_init();
+    esp_sntp_init();
 }
 
 /* Функция преобразования структуры статуса в json строку*/
@@ -382,7 +377,6 @@ char *mqttStatusJson(StatusStruct s)
 char *mqttSystemJson(SystemStruct s)
 {
     cJSON *json = cJSON_CreateObject();
-
 
     cJSON_AddStringToObject(json, "ssid", s.ssid);
     cJSON_AddStringToObject(json, "password", s.password);
@@ -519,6 +513,11 @@ esp_err_t http_event_handler(esp_http_client_event_t *evt)
         {
             ESP_LOGE(tag, "get_sunrise_sunset error");
         }
+        else
+        {
+            // Публикуем топик статуса
+            xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+        }
         free(openweather_data);
         break;
 
@@ -606,6 +605,8 @@ void mqtt_start(void)
         .session.last_will.msg_len = strlen("offline"),
         .session.last_will.qos = 1,
         .session.last_will.retain = true,
+        //        .session.keepalive = 60,
+        .network.refresh_connection_after_ms = 60000,
 
     };
 
@@ -914,7 +915,7 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
             xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
 
             // Все выключаем
-            xTimerStop(timer_1s_handle, 0);
+            xTimerStop(timer1_handle, 0);
 
             // Запускаем обновление
             xTaskCreate(&ota_task, "ota_task", 4096, NULL, 3, NULL);
@@ -1173,7 +1174,6 @@ void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, 
 void ota_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     const char *tag = "ota_event_handler";
-    esp_err_t err;
 
     if (event_base == ESP_HTTPS_OTA_EVENT)
     {
@@ -1250,9 +1250,9 @@ void openweather_task(void *param)
                 .method = HTTP_METHOD_GET,
                 .event_handler = http_event_handler,
                 .crt_bundle_attach = esp_crt_bundle_attach,
-                .is_async = true,
-                .timeout_ms = 60000,
-                // .cert_pem = (char *)server_cert_pem_start,
+                //.is_async = true,
+                //.timeout_ms = 60000,
+                //.cert_pem = (char *)server_cert_pem_start,
 
             };
 
@@ -1264,11 +1264,15 @@ void openweather_task(void *param)
             if (status_code == 200)
             {
                 ESP_LOGI(tag, "Perform OpenWeather API Request success. Status code: %d", status_code);
-                break;
+                struct tm *tm_now = localtime(&_status.current_time_unix);
+                strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
+
+                // break;
             }
             else
+            {
                 ESP_LOGE(tag, "Perform OpenWeather API Request Error. Status code: %d", status_code);
-            vTaskDelay(pdMS_TO_TICKS(10000));
+            }
         }
     }
     esp_http_client_cleanup(client);
@@ -1303,8 +1307,7 @@ bool get_sunrise_sunset(const char *json_string)
         ESP_LOGI(tag, "Time sunset: %s", _status.sunset_time);
 
         struct tm *tm_now;
-        time_t now = time(NULL);
-        tm_now = localtime(&now);
+        tm_now = localtime(&_status.current_time_unix);
         strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
         ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_ow_updated);
         return true;
@@ -1322,7 +1325,6 @@ void topic_publish_task(void *param)
 {
     const char *tag = "topic_publish_task";
     EventBits_t uxBits;
-    esp_err_t err;
     char *str;
 
     ESP_LOGI(tag, "started...");
@@ -1500,11 +1502,8 @@ void ota_task(void *param)
             ESP_LOGI(tag, "ESP_HTTPS_OTA upgrade successful. Rebooting ...");
 
             // Получаем время последнего обновления и сохраняем в nvs
-            time_t now = time(NULL);
-            struct tm *tm = localtime(&now);
-
-            snprintf(_system.last_updated, sizeof(_system.last_updated), "%02d:%02d:%02d %02d.%02d.%04d", tm->tm_hour, tm->tm_min, tm->tm_sec,
-                     tm->tm_mday, tm->tm_mon + 1, tm->tm_year + 1900);
+            struct tm *tm_now = localtime(&_status.current_time_unix);
+            strftime(_status.current_time, sizeof(_status.current_time), "%d.%m.%Y %H:%M:%S", tm_now);
             ESP_LOGI(tag, "Last updated: %s", _system.last_updated);
 
             // Сохраняем новое значение
@@ -1936,10 +1935,10 @@ void wifi_init(void)
 }
 
 /* Обработчик событий программного таймера c периодоим 1 секунда */
-void timer_1s_cb(TimerHandle_t pxTimer)
+void timer1_cb(TimerHandle_t pxTimer)
 {
     struct tm *tm_now;
-    const char *tag = "timer_1s_cb";
+    const char *tag = "timer_1";
 
     if (time_sync)
     {
@@ -1954,9 +1953,18 @@ void timer_1s_cb(TimerHandle_t pxTimer)
         // Обновляем запрос времени восходя/заката в полночь
         if (tm_now->tm_hour == 0 && tm_now->tm_min == 0 && tm_now->tm_sec == 0)
         {
-            xEventGroupSetBits(event_group, OW_REFRESH_BIT);
-            strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
+            // ESP_LOGW(tag, "ow updating");
+            // xEventGroupSetBits(event_group, OW_REFRESH_BIT);
+            // xTaskCreate(openweather_task, "openweather_task", 4096, NULL, 3, NULL);
+            esp_restart();
         }
+        // // Обновляем запрос времени восходя/заката в полночь
+        // if (tm_now->tm_sec == 0)
+        // {
+        //     ESP_LOGW(tag, "ow updating");
+        //     xEventGroupSetBits(event_group, OW_REFRESH_BIT);
+        //     xTaskCreate(openweather_task, "openweather_task", 4096, NULL, 3, NULL);
+        // }
         if (_status.on_sunrise == 1 && _status.current_time_unix == _status.sunrise_time_unix)
         {
             _status.shade = _status.shade_sunrise;
@@ -1975,15 +1983,15 @@ void timer_1s_cb(TimerHandle_t pxTimer)
 }
 
 /* Обработчик событий программного таймера c периодоим 1 минута */
-void timer_1m_cb(TimerHandle_t pxTimer)
+void timer2_cb(TimerHandle_t pxTimer)
 {
-    const char *tag = "timer_1m_cb";
+    // const char *tag = "timer_2";
 
-    if (mqttClient != NULL)
-    {
-        int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicCheckOnline, "online", 0, mqttTopicCheckOnlineQoS, mqttTopicCheckOnlinetRet);
-        ESP_LOGI(tag, "MQTT topic %s publish success, msg_id=%d", mqttTopicCheckOnline, msg_id);
-    }
+    // if (mqttClient != NULL)
+    // {
+    //     int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicCheckOnline, "online", 0, mqttTopicCheckOnlineQoS, mqttTopicCheckOnlinetRet);
+    //     ESP_LOGI(tag, "MQTT topic %s publish success, msg_id=%d", mqttTopicCheckOnline, msg_id);
+    // }
 }
 
 void app_main(void)
@@ -2330,33 +2338,33 @@ void app_main(void)
 
     xTaskCreate(led_task, "led_task", 2048, NULL, 3, NULL);
     xTaskCreate(init_btn_task, "init_btn_task", 2048, NULL, 3, NULL);
-    xTaskCreate(openweather_task, "openweather_task", 4096, NULL, 3, NULL);
+    xTaskCreate(openweather_task, "openweather_task", 8000, NULL, 3, NULL);
     xTaskCreate(topic_publish_task, "topic_publish_task", 4096, NULL, 3, NULL);
 
     // Создаем программный таймер с периодом 1 секунда
-    timer_1s_handle = xTimerCreate(
+    timer1_handle = xTimerCreate(
         "Timer_1s",
         pdMS_TO_TICKS(1000),
         pdTRUE,
         NULL,
-        timer_1s_cb);
+        timer1_cb);
 
     // Создаем программный таймер с периодом 1 минута для периодической отправки статуса соединения
-    timer_1m_handle = xTimerCreate(
+    timer2_handle = xTimerCreate(
         "Timer_1m",
-        pdMS_TO_TICKS(60000),
+        pdMS_TO_TICKS(10000),
         pdTRUE,
         NULL,
-        timer_1m_cb);
+        timer2_cb);
 
     // Запускаем таймеры
-    if (xTimerStart(timer_1s_handle, 0) == pdPASS)
+    if (xTimerStart(timer1_handle, 0) == pdPASS)
     {
-        ESP_LOGI(tag, "1 second timer started...");
+        ESP_LOGI(tag, "timer 1 started...");
     }
 
-    if (xTimerStart(timer_1m_handle, 0) == pdPASS)
+    if (xTimerStart(timer2_handle, 0) == pdPASS)
     {
-        ESP_LOGI(tag, "1 minute timer started...");
+        ESP_LOGI(tag, "timer 2 started...");
     }
 }
