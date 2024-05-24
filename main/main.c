@@ -339,9 +339,9 @@ void time_sync_start(const char *tz)
     // Выбираем часовой пояс и запускаем синхронизацию времени с SNTP
     setenv("TZ", _system.timezone, 1);
     tzset();
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, _system.time_server1);
-    sntp_setservername(1, _system.time_server2);
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, _system.time_server1);
+    esp_sntp_setservername(1, _system.time_server2);
     sntp_set_time_sync_notification_cb(time_sync_cb);
     esp_sntp_init();
 }
@@ -596,7 +596,6 @@ void mqtt_start(void)
     const esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = mqttServer,
         .broker.address.port = mqttPort,
-        .network.disable_auto_reconnect = true,
         .credentials.authentication.password = mqttPass,
         .credentials.username = mqttUser,
         .credentials.set_null_client_id = true,
@@ -605,7 +604,6 @@ void mqtt_start(void)
         .session.last_will.msg_len = strlen("offline"),
         .session.last_will.qos = 1,
         .session.last_will.retain = true,
-        .session.disable_keepalive = true,
         .network.refresh_connection_after_ms = 600000,
 
     };
@@ -648,10 +646,10 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
         msg_id = esp_mqtt_client_publish(client, mqttTopicCheckOnline, "online", 0, mqttTopicCheckOnlineQoS, mqttTopicCheckOnlinetRet);
         ESP_LOGI(tag, "MQTT topic %s publish success, msg_id=%d", mqttTopicCheckOnline, msg_id);
 
-        msg_id = esp_mqtt_client_publish(client, mqttTopicSystem, mqttTopicSystem, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
+        msg_id = esp_mqtt_client_publish(client, mqttTopicSystem, mqttSystemJson(_system), 0, mqttTopicSystemQoS, mqttTopicSystemRet);
         ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, mqttSystemJson(_system));
 
-        msg_id = esp_mqtt_client_publish(client, mqttTopicStatus, mqttTopicStatus, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
+        msg_id = esp_mqtt_client_publish(client, mqttTopicStatus, mqttStatusJson(_status), 0, mqttTopicStatusQoS, mqttTopicStatusRet);
         ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, mqttStatusJson(_status));
 
         msg_id = esp_mqtt_client_subscribe(client, mqttTopicAddSunrise, mqttTopicAddSunriseQoS);
@@ -1267,9 +1265,6 @@ void openweather_task(void *param)
             if (status_code == 200)
             {
                 ESP_LOGI(tag, "Perform OpenWeather API Request success. Status code: %d", status_code);
-                struct tm *tm_now = localtime(&_status.current_time_unix);
-                strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
-
                 // break;
             }
             else
@@ -1506,7 +1501,7 @@ void ota_task(void *param)
 
             // Получаем время последнего обновления и сохраняем в nvs
             struct tm *tm_now = localtime(&_status.current_time_unix);
-            strftime(_status.current_time, sizeof(_status.current_time), "%d.%m.%Y %H:%M:%S", tm_now);
+            strftime(_system.last_updated, sizeof(_system.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
             ESP_LOGI(tag, "Last updated: %s", _system.last_updated);
 
             // Сохраняем новое значение
@@ -1950,8 +1945,16 @@ void timer1_cb(TimerHandle_t pxTimer)
         // Получаем текущую дату и время и записываем в структуру статуса
         tm_now = localtime(&_status.current_time_unix);
         strftime(_status.current_time, sizeof(_status.current_time), "%d.%m.%Y %H:%M:%S", tm_now);
-        ESP_LOGI(tag, "Time now: %lu %s Current pos: %d Target pos: %d Length: %d",
-                 (unsigned long)_status.current_time_unix, _status.current_time, _status.current_pos, _status.target_pos, _status.length);
+        // ESP_LOGI(tag, "Time now: %lu Current pos: %d Target pos: %d Length: %d",
+        //          (unsigned long)_status.current_time_unix,
+        //          _status.current_time, _status.current_pos,
+        //          _status.target_pos,
+        //          _status.length)
+        ESP_LOGI(tag, "Time now %" PRIu32 " %s Free heap size is %" PRIu32 " Minimum heap size %" PRIu32,
+                 (uint32_t)_status.current_time_unix,
+                 _status.current_time,
+                 esp_get_free_heap_size(),
+                 esp_get_minimum_free_heap_size());
 
         // Обновляем запрос времени восходя/заката в полночь
         if (tm_now->tm_hour == 0 && tm_now->tm_min == 0 && tm_now->tm_sec == 0)
