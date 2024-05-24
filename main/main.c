@@ -604,7 +604,7 @@ void mqtt_start(void)
         .session.last_will.msg_len = strlen("offline"),
         .session.last_will.qos = 1,
         .session.last_will.retain = true,
-        .network.refresh_connection_after_ms = 600000,
+        //.network.refresh_connection_after_ms = 1800000,
 
     };
 
@@ -907,10 +907,12 @@ void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event
         {
             ESP_LOGW(tag, "Firmware update topic received: %s", data);
 
-            strcpy(_system.update_url, data);
-
-            // Сохраняем новое значение
-            nvs_write_str("update_url", _system.update_url);
+            if (strcmp(data, "last"))
+            {
+                strcpy(_system.update_url, data);
+                // Сохраняем новое значение
+                nvs_write_str("update_url", _system.update_url);
+            }
 
             // Публикуем системный топик
             xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
