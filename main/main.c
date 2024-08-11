@@ -37,9 +37,10 @@ extern const uint8_t owmap_org_pem_end[] asm("_binary_owmap_org_pem_end");
 extern const uint8_t tg_org_pem_start[] asm("_binary_api_telegram_org_pem_start");
 extern const uint8_t tg_org_pem_end[] asm("_binary_api_telegram_org_pem_end");
 
-#define WEB_SERVER "https://api.telegram.org"
-#define WEB_PORT "443"
-#define WEB_URL "https://api.telegram.org/bot7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM/getme"
+#define TG_HOST "https://api.telegram.org"
+#define TG_PORT "443"
+#define TG_PATH "https://api.telegram.org/bot7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM/sendMessage"
+
 
 #define DEFAULT_MAX_TIME_SYNC_WAITING 10
 #define DEFAULT_MAX_STEPS 30000
@@ -269,6 +270,63 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t eve
 static void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void ota_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
+
+void tgSend()
+{
+    const char *tag = "tgSend";
+
+    const char *data = "qq";
+
+    int chat_id = 1090787677;
+
+    // Configuring request parameters
+    esp_err_t ret = ESP_FAIL;
+    esp_http_client_config_t cfgHttp;
+    memset(&cfgHttp, 0, sizeof(cfgHttp));
+    cfgHttp.method = HTTP_METHOD_POST;
+    cfgHttp.host = TG_HOST;
+    cfgHttp.port = 443;
+    cfgHttp.path = TG_PATH;
+    cfgHttp.timeout_ms = 60000;
+    cfgHttp.transport_type = HTTP_TRANSPORT_OVER_SSL;
+    cfgHttp.cert_pem = (char *)tg_org_pem_start;
+    cfgHttp.use_global_ca_store = false;
+
+    // Make request to Telegram API
+    esp_http_client_handle_t client = esp_http_client_init(&cfgHttp);
+    if (client)
+    {
+        esp_http_client_set_header(client, "Content-Type", "application/json");
+        esp_http_client_set_post_field(client, data, strlen(data));
+        ret = esp_http_client_perform(client);
+        if (ret == ESP_OK)
+        {
+            int retCode = esp_http_client_get_status_code(client);
+            if (retCode == HttpStatus_Ok)
+            {
+                ret = ESP_OK;
+                ESP_LOGI(tag, "Message sent");
+            }
+            else if (retCode == HttpStatus_Forbidden)
+            {
+                ret = ESP_ERR_INVALID_RESPONSE;
+                ESP_LOGE(tag, "Failed to send message, too many messages, please wait");
+            }
+            else
+            {
+                ret = ESP_ERR_INVALID_ARG;
+                ESP_LOGE(tag, "Failed to send message, API error code: %d!", retCode);
+            };
+
+            esp_http_client_cleanup(client);
+        }
+        else
+        {
+            ret = ESP_ERR_INVALID_STATE;
+            ESP_LOGE(tag, "Failed to complete request to Telegram API!");
+        };
+    }
+}
 
 static float esp_heap_free_percent()
 {
@@ -610,7 +668,8 @@ static bool mqttSubscribe(esp_mqtt_client_handle_t client, char *topic, int qos)
 {
     char *tag = "mqttSubscribe";
 
-    if (client == NULL || topic == NULL) return false;
+    if (client == NULL || topic == NULL)
+        return false;
     else
     {
         if (esp_mqtt_client_subscribe(client, topic, qos) != -1)
@@ -631,7 +690,8 @@ static bool mqttPublish(esp_mqtt_client_handle_t client, char *topic, char *data
 {
     char *tag = "mqttPublish";
 
-    if (client == NULL || topic == NULL || data == NULL) return false;
+    if (client == NULL || topic == NULL || data == NULL)
+        return false;
     else
     {
         if (esp_mqtt_client_publish(client, topic, data, strlen(data), qos, retain) != -1)
@@ -2327,6 +2387,7 @@ static void timer2_cb(TimerHandle_t pxTimer)
 
         // Публикуем топик статуса
         xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+        tgSend();
     }
 }
 
