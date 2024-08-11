@@ -9,3 +9,4 @@ project(eShader)
 
 target_add_binary_data(eShader.elf "main/wqtt.pem" TEXT)
 target_add_binary_data(eShader.elf "main/owmap_org.pem" TEXT)
+target_add_binary_data(eShader.elf "main/api_telegram_org.pem" TEXT)

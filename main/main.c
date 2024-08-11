@@ -34,6 +34,9 @@ extern const uint8_t wqtt_pem_end[] asm("_binary_wqtt_pem_end");
 extern const uint8_t owmap_org_pem_start[] asm("_binary_owmap_org_pem_start");
 extern const uint8_t owmap_org_pem_end[] asm("_binary_owmap_org_pem_end");
 
+extern const uint8_t tg_org_pem_start[] asm("_binary_api_telegram_org_pem_start");
+extern const uint8_t tg_org_pem_end[] asm("_binary_api_telegram_org_pem_end");
+
 #define WEB_SERVER "https://api.telegram.org"
 #define WEB_PORT "443"
 #define WEB_URL "https://api.telegram.org/bot7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM/getme"
