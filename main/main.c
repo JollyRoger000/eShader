@@ -122,7 +122,7 @@ static int mqttTopicSystemCountryQoS = 0;
 static int mqttTopicSystemCityQoS = 0;
 
 static int mqttTopicStatusRet = 0;
-static int mqttTopicCheckOnlinetRet = 0;
+static int mqttTopicCheckOnlineRet = 0;
 static int mqttTopicControlRet = 0;
 static int mqttTopicTimersRet = 0;
 static int mqttTopicAddTimerRet = 0;
@@ -602,6 +602,50 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
+// Функция подписки на топики
+static bool mqttSubscribe(esp_mqtt_client_handle_t client, char *topic, int qos)
+{
+    char *tag = "mqttSubscribe";
+
+    if (client == NULL || topic == NULL) return false;
+    else
+    {
+        if (esp_mqtt_client_subscribe(client, topic, qos) != -1)
+        {
+            ESP_LOGI(tag, "Subscribed to topic %s", topic);
+            return true;
+        }
+        else
+        {
+            ESP_LOGE(tag, "Failed to subscribe to topic %s", topic);
+            return false;
+        }
+    }
+}
+
+// Функция публикации топика
+static bool mqttPublish(esp_mqtt_client_handle_t client, char *topic, char *data, int qos, int retain)
+{
+    char *tag = "mqttPublish";
+
+    if (client == NULL || topic == NULL || data == NULL) return false;
+    else
+    {
+        if (esp_mqtt_client_publish(client, topic, data, strlen(data), qos, retain) != -1)
+        {
+            ESP_LOGI(tag, "Published to topic %s", topic);
+            return true;
+        }
+        else
+        {
+            ESP_LOGE(tag, "Failed to publish to topic %s", topic);
+            return false;
+        }
+    }
+}
+
+// Функция обработчик событий MQTT
+
 /* Инициализация клиента MQTT */
 static void mqtt_start(void)
 {
@@ -697,21 +741,13 @@ static void mqtt_start(void)
 
         esp_mqtt_client_config_t *mqtt_cfg;
         mqtt_cfg = (esp_mqtt_client_config_t *)calloc(1, sizeof(esp_mqtt_client_config_t));
-        // mqtt_cfg->broker.address.uri = mqttServer;
-        // mqtt_cfg->broker.address.port = mqttPort;
         mqtt_cfg->broker.address.uri = mqttsServer;
         mqtt_cfg->broker.address.port = mqttTlsPort;
         mqtt_cfg->credentials.authentication.password = mqttPass;
         mqtt_cfg->credentials.username = mqttUser;
-        // mqtt_cfg->session.last_will.topic = mqttTopicCheckOnline;
-        // mqtt_cfg->session.last_will.msg = "offline";
+        mqtt_cfg->session.last_will.topic = mqttTopicCheckOnline;
+        mqtt_cfg->session.last_will.msg = "offline";
         mqtt_cfg->broker.verification.certificate = (const char *)wqtt_pem_start;
-        mqtt_cfg->network.timeout_ms = 10000;
-        mqtt_cfg->network.reconnect_timeout_ms = 10000;
-        mqtt_cfg->credentials.client_id = mqttHostname;
-        // mqtt_cfg->network.disable_auto_reconnect = false;
-        // mqtt_cfg->network.refresh_connection_after_ms = 60000;
-        //  mqtt_cfg->broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
 
         mqttClient = esp_mqtt_client_init(mqtt_cfg);
         if (mqttClient != NULL)
@@ -722,7 +758,9 @@ static void mqtt_start(void)
             ESP_LOGI(tag, "MQTT start. Hostname: %s", mqttHostname);
         }
         if (mqtt_cfg != NULL)
+        {
             vPortFree(mqtt_cfg);
+        }
     }
     else
     {
@@ -755,175 +793,29 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         if (event->client != NULL)
         {
             // Публикуем состояние и подписываемся на топики
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicAddSunrise, mqttTopicAddSunriseQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicAddSunrise);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicAddSunrise);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicAddSunset, mqttTopicAddSunsetQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicAddSunset);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicAddSunset);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicAddTimer, mqttTopicAddTimerQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicAddTimer);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicAddTimer);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicStatus, mqttTopicStatusQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicStatus);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicStatus);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicTimers, mqttTopicTimersQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicTimers);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicTimers);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicControl, mqttTopicControlQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicControl);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicControl);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicDelSunrise, mqttTopicDelSunriseQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicDelSunrise);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicDelSunrise);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicDelSunset, mqttTopicDelSunsetQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicDelSunset);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicDelSunset);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicSystem, mqttTopicSystemQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicSystem);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicSystem);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicSystemOWKey, mqttTopicSystemOWKeyQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicSystemOWKey);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicSystemOWKey);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicSystemTGKey, mqttTopicSystemTGKeyQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicSystemTGKey);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicSystemTGKey);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicSystemMaxSteps, mqttTopicSystemMaxStepsQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicSystemMaxSteps);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicSystemMaxSteps);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicSystemUpdate, mqttTopicSystemUpdateQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicSystemUpdate);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicSystemUpdate);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicSystemServerTime1, mqttTopicSystemServerTime1QoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicSystemServerTime1);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicSystemServerTime1);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicSystemServerTime2, mqttTopicSystemServerTime2QoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicSystemServerTime2);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicSystemServerTime2);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicSystemTimeZone, mqttTopicSystemTimeZoneQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicSystemTimeZone);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicSystemTimeZone);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicSystemCity, mqttTopicSystemCityQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicSystemCity);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicSystemCity);
-            }
-            if (esp_mqtt_client_subscribe(event->client, mqttTopicSystemCountry, mqttTopicSystemCountryQoS) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s subscribe success", mqttTopicSystemCountry);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s subscribe error", mqttTopicSystemCountry);
-            }
+            mqttSubscribe(event->client, mqttTopicCheckOnline, mqttTopicCheckOnlineQoS);
+            mqttSubscribe(event->client, mqttTopicStatus, mqttTopicStatusQoS);
+            mqttSubscribe(event->client, mqttTopicTimers, mqttTopicTimersQoS);
+            mqttSubscribe(event->client, mqttTopicControl, mqttTopicControlQoS);
+            mqttSubscribe(event->client, mqttTopicAddTimer, mqttTopicAddTimerQoS);
+            mqttSubscribe(event->client, mqttTopicAddSunrise, mqttTopicAddSunriseQoS);
+            mqttSubscribe(event->client, mqttTopicAddSunset, mqttTopicAddSunsetQoS);
+            mqttSubscribe(event->client, mqttTopicDelSunrise, mqttTopicDelSunriseQoS);
+            mqttSubscribe(event->client, mqttTopicDelSunset, mqttTopicDelSunsetQoS);
+            mqttSubscribe(event->client, mqttTopicSystem, mqttTopicSystemQoS);
+            mqttSubscribe(event->client, mqttTopicSystemUpdate, mqttTopicSystemUpdateQoS);
+            mqttSubscribe(event->client, mqttTopicSystemMaxSteps, mqttTopicSystemMaxStepsQoS);
+            mqttSubscribe(event->client, mqttTopicSystemTGKey, mqttTopicSystemTGKeyQoS);
+            mqttSubscribe(event->client, mqttTopicSystemOWKey, mqttTopicSystemOWKeyQoS);
+            mqttSubscribe(event->client, mqttTopicSystemServerTime1, mqttTopicSystemServerTime1QoS);
+            mqttSubscribe(event->client, mqttTopicSystemServerTime2, mqttTopicSystemServerTime2QoS);
+            mqttSubscribe(event->client, mqttTopicSystemTimeZone, mqttTopicSystemTimeZoneQoS);
+            mqttSubscribe(event->client, mqttTopicSystemCity, mqttTopicSystemCityQoS);
+            mqttSubscribe(event->client, mqttTopicSystemCountry, mqttTopicSystemCountryQoS);
 
-            if (esp_mqtt_client_publish(event->client, mqttTopicCheckOnline, "online", 0, mqttTopicCheckOnlineQoS, mqttTopicCheckOnlinetRet) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic %s publish success", mqttTopicCheckOnline);
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic %s publish error", mqttTopicCheckOnline);
-            }
-            if (esp_mqtt_client_publish(event->client, mqttTopicSystem, mqttSystemJson(_system), 0, mqttTopicSystemQoS, mqttTopicSystemRet) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, data: %s", mqttTopicSystem, mqttSystemJson(_system));
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic (%s) publish error", mqttTopicSystem);
-            }
-            if (esp_mqtt_client_publish(event->client, mqttTopicStatus, mqttStatusJson(_status), 0, mqttTopicStatusQoS, mqttTopicStatusRet) != -1)
-            {
-                ESP_LOGI(tag, "MQTT topic (%s) publish success, data: %s", mqttTopicStatus, mqttStatusJson(_status));
-            }
-            else
-            {
-                ESP_LOGE(tag, "MQTT topic (%s) publish error", mqttTopicStatus);
-            }
+            mqttPublish(event->client, mqttTopicCheckOnline, "online", mqttTopicCheckOnlineQoS, mqttTopicCheckOnlineRet);
+            mqttPublish(event->client, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
+            mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
         }
         break;
 
@@ -1744,8 +1636,7 @@ static void topic_publish_task(void *param)
                 ESP_LOGI(tag, "System topic: %s", str);
                 if (mqttConnected && mqttClient != NULL)
                 {
-                    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicSystem, str, 0, mqttTopicSystemQoS, mqttTopicSystemRet);
-                    ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicSystem, msg_id, str);
+                    mqttPublish(mqttClient, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
                 }
                 free(str);
             }
@@ -1762,8 +1653,7 @@ static void topic_publish_task(void *param)
                 ESP_LOGI(tag, "Status topic: %s", str);
                 if (mqttConnected && mqttClient != NULL)
                 {
-                    int msg_id = esp_mqtt_client_publish(mqttClient, mqttTopicStatus, str, 0, mqttTopicStatusQoS, mqttTopicStatusRet);
-                    ESP_LOGI(tag, "MQTT topic (%s) publish success, msg_id: %d, data: %s", mqttTopicStatus, msg_id, str);
+                    mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
                 }
                 free(str);
             }
@@ -2372,7 +2262,8 @@ static void timer1_cb(TimerHandle_t pxTimer)
             fflush(stdout);
 
             // Запускаем MQTT
-            if (!mqttConnected) mqtt_start();
+            if (!mqttConnected)
+                mqtt_start();
 
             // Повторяем запрос openweather каждые 10 минут если предыдущее обновление неудачно
             if (!owUpdated && tm_now->tm_min == 10 && tm_now->tm_sec == 0)
