@@ -40,7 +40,8 @@ extern const uint8_t tg_org_pem_end[] asm("_binary_api_telegram_org_pem_end");
 #define TG_HOST "https://api.telegram.org"
 #define TG_PORT "443"
 #define TG_PATH "https://api.telegram.org/bot7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM/sendMessage"
-
+#define API_TELEGRAM_TMPL_MESSAGE "{\"chat_id\":%s,\"parse_mode\":\"HTML\",\"disable_notification\":%s,\"text\":\"%s\r\n\r\n<code>%s</code>\"}"
+// #define API_TELEGRAM_TMPL_MESSAGE "{\"chat_id\":\"1090787677\",\"parse_mode\":\"HTML\",\"disable_notification\":\"false\"}"
 
 #define DEFAULT_MAX_TIME_SYNC_WAITING 10
 #define DEFAULT_MAX_STEPS 30000
@@ -147,7 +148,6 @@ static int mqttTopicSystemCityRet = 0;
 
 typedef struct
 {
-    time_t current_time_unix; // В UNIX формате
     time_t sunrise_time_unix; // В UNIX формате
     time_t sunset_time_unix;  // В UNIX формате
     char current_time[20];
@@ -238,6 +238,7 @@ static bool password_loaded = false;
 static bool time_sync = false;
 static bool mqttConnected = false;
 static bool owUpdated = false;
+static bool isStarted = false;
 
 static struct tm *tm_now;
 
@@ -271,11 +272,62 @@ static void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t eve
 static void ota_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
 
+char *malloc_string(const char *source)
+{
+    const char *tag = "malloc_string";
+    if (source)
+    {
+        uint32_t len = strlen(source);
+
+        char *ret = (char *)malloc(len + 1);
+        if (ret == NULL)
+        {
+            ESP_LOGE(tag, "Failed to create string: out of memory!");
+            return NULL;
+        }
+        memset(ret, 0, len + 1);
+        strcpy(ret, source);
+        return ret;
+    };
+    return NULL;
+}
+
+char *malloc_stringf(const char *format, ...)
+{
+    const char *tag = "malloc_stringf";
+    char *ret = NULL;
+    if (format != NULL)
+    {
+        // get the list of arguments
+        va_list args1, args2;
+        va_start(args1, format);
+        va_copy(args2, args1);
+        // calculate length of resulting string
+        int len = vsnprintf(NULL, 0, format, args1);
+        va_end(args1);
+        // allocate memory for string
+        if (len > 0)
+        {
+            ret = (char *)malloc(len + 1);
+
+            if (ret != NULL)
+            {
+                memset(ret, 0, len + 1);
+                vsnprintf(ret, len + 1, format, args2);
+            }
+            else
+            {
+                ESP_LOGE(tag, "Failed to format string: out of memory!");
+            };
+        };
+        va_end(args2);
+    };
+    return ret;
+}
+
 void tgSend()
 {
     const char *tag = "tgSend";
-
-    const char *data = "qq";
 
     int chat_id = 1090787677;
 
@@ -292,12 +344,14 @@ void tgSend()
     cfgHttp.cert_pem = (char *)tg_org_pem_start;
     cfgHttp.use_global_ca_store = false;
 
+    char *buffer_json = malloc_stringf(API_TELEGRAM_TMPL_MESSAGE, chat_id, "false", "hello", 123);
+
     // Make request to Telegram API
     esp_http_client_handle_t client = esp_http_client_init(&cfgHttp);
     if (client)
     {
         esp_http_client_set_header(client, "Content-Type", "application/json");
-        esp_http_client_set_post_field(client, data, strlen(data));
+        esp_http_client_set_post_field(client, buffer_json, strlen(buffer_json));
         ret = esp_http_client_perform(client);
         if (ret == ESP_OK)
         {
@@ -808,6 +862,7 @@ static void mqtt_start(void)
         mqtt_cfg->broker.address.port = mqttTlsPort;
         mqtt_cfg->credentials.authentication.password = mqttPass;
         mqtt_cfg->credentials.username = mqttUser;
+        mqtt_cfg->credentials.client_id = mqttHostname;
         mqtt_cfg->session.last_will.topic = mqttTopicCheckOnline;
         mqtt_cfg->session.last_will.msg = "offline";
         mqtt_cfg->broker.verification.certificate = (const char *)wqtt_pem_start;
@@ -850,7 +905,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
         mqttConnected = true;
 
-        tm_now = localtime(&_status.current_time_unix);
+        time_t now;
+        time(&now);
+        tm_now = localtime(&now);
         strftime(_status.current_time, sizeof(_status.current_time), "%d.%m.%Y %H:%M:%S", tm_now);
 
         if (event->client != NULL)
@@ -1646,7 +1703,9 @@ static bool get_sunrise_sunset(const char *json_string)
                     return false;
                 }
 
-                tm_now = localtime(&_status.current_time_unix);
+                time_t now;
+                time(&now);
+                tm_now = localtime(&now);
                 if (tm_now != NULL)
                 {
                     strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
@@ -1875,7 +1934,9 @@ static void ota_task(void *param)
             ESP_LOGI(tag, "ESP_HTTPS_OTA upgrade successful. Rebooting ...");
 
             // Получаем время последнего обновления и сохраняем в nvs
-            tm_now = localtime(&_status.current_time_unix);
+            time_t now;
+            time(&now);
+            tm_now = localtime(&now);
             strftime(_system.last_updated, sizeof(_system.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
             ESP_LOGI(tag, "Last updated: %s", _system.last_updated);
 
@@ -1954,25 +2015,8 @@ static void wifi_connect_task(void *param)
 static void time_sync_cb(struct timeval *tv)
 {
     const char *tag = "time_sync_cb";
-
-    //  Получаем текущее время
-    _status.current_time_unix = time(NULL);
-    tm_now = localtime(&_status.current_time_unix);
-    if (tm_now != NULL)
-    {
-        if (tm_now->tm_year < (1970 - 1900))
-        {
-            ESP_LOGE(tag, "Time synchronization failed!");
-            time_sync = false;
-        }
-        else
-        {
-            strftime(_status.last_started, sizeof(_status.last_started), "%d.%m.%Y %H:%M:%S", tm_now);
-            ESP_LOGI(tag, "Time sync completed, current time: %s", _status.last_started);
-
-            time_sync = true;
-        }
-    }
+    ESP_LOGI(tag, "Time is set from custom code: %lld", tv->tv_sec);
+    time_sync = true;
 }
 
 /* Управление вращением мотора */
@@ -2314,13 +2358,23 @@ static void timer1_cb(TimerHandle_t pxTimer)
     if (time_sync)
     {
         wating_to_time_sync = 0;
-        _status.current_time_unix++;
 
         // Получаем текущую дату и время и записываем в структуру статуса
-        tm_now = localtime(&_status.current_time_unix);
+        time_t now;
+        time(&now);
+        tm_now = localtime(&now);
         if (tm_now != NULL)
         {
+            // Преобразуем текущую дату в читаемый вид
             strftime(_status.current_time, sizeof(_status.current_time), "%d.%m.%Y %H:%M:%S", tm_now);
+            // Запоминаем время запуска
+            if(!isStarted) 
+            {
+                strftime(_status.last_started, sizeof(_status.last_started), "%d.%m.%Y %H:%M:%S", tm_now);
+                isStarted = true;
+            }
+            
+            // Выводим данные в консоль
             printf("\rSystem is active. Time now %s Working time %lld sec. Free heap %0.1f %%", _status.current_time, _status.working_time, esp_heap_free_percent());
             fflush(stdout);
 
@@ -2337,17 +2391,15 @@ static void timer1_cb(TimerHandle_t pxTimer)
             // Обновляем запрос времени восходя/заката в полночь
             if (tm_now->tm_hour == 0 && tm_now->tm_min == 0 && tm_now->tm_sec == 0)
             {
-                // ESP_LOGW(tag, "ow updating");
-                // xEventGroupSetBits(event_group, OW_REFRESH_BIT);
-                // xTaskCreate(openweather_task, "openweather_task", 4096, NULL, 3, NULL);
-                // esp_restart();
+                owUpdated = false;
+                xEventGroupSetBits(event_group, OW_REFRESH_BIT);
             }
-            if (_status.on_sunrise == 1 && _status.current_time_unix == _status.sunrise_time_unix)
+            if (_status.on_sunrise == 1 && now == _status.sunrise_time_unix)
             {
                 _status.shade = _status.shade_sunrise;
                 xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
             }
-            if (_status.on_sunset == 1 && _status.current_time_unix == _status.sunset_time_unix)
+            if (_status.on_sunset == 1 && now == _status.sunset_time_unix)
             {
                 _status.shade = _status.shade_sunset;
                 xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
@@ -2373,21 +2425,17 @@ static void timer1_cb(TimerHandle_t pxTimer)
 static void timer2_cb(TimerHandle_t pxTimer)
 {
     const char *tag = "timer_2";
-    // ESP_LOGI(tag, "status topic publish");
 
-    tm_now = localtime(&_status.current_time_unix);
+    time_t now;
+    time(&now);
+    tm_now = localtime(&now);
     if (tm_now != NULL)
     {
         strftime(_status.current_time, sizeof(_status.current_time), "%d.%m.%Y %H:%M:%S", tm_now);
 
-        ESP_LOGI(tag, "Time now %" PRIu32 " %s Free heap size is %0.1f percent",
-                 (uint32_t)_status.current_time_unix,
-                 _status.current_time,
-                 esp_heap_free_percent());
-
         // Публикуем топик статуса
         xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
-        tgSend();
+        // tgSend();
     }
 }
 
