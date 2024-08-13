@@ -865,6 +865,9 @@ static void mqtt_start(void)
         mqtt_cfg->credentials.client_id = mqttHostname;
         mqtt_cfg->session.last_will.topic = mqttTopicCheckOnline;
         mqtt_cfg->session.last_will.msg = "offline";
+        mqtt_cfg->session.last_will.qos = 1;
+        mqtt_cfg->session.last_will.retain = 1;
+        mqtt_cfg->session.last_will.msg_len = strlen("offline");
         mqtt_cfg->broker.verification.certificate = (const char *)wqtt_pem_start;
 
         mqttClient = esp_mqtt_client_init(mqtt_cfg);
@@ -1343,10 +1346,22 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     ESP_LOGE(tag, "data_len error");
                 }
             }
+            if (!strcmp(topic, mqttTopicCheckOnline))
+            {
+                ESP_LOGW(tag, "Checkonline topic received");
+                // Запрос на чтение параметров системы
+                if (event->data_len > 0)
+                {
+                    if (!strcmp(data, "check"))
+                    {
+                        mqttPublish(event->client, mqttTopicCheckOnline, "online", mqttTopicCheckOnlineQoS, mqttTopicCheckOnlineRet);
+                    }
+                }
+            }
+
             vPortFree(topic);
             vPortFree(data);
         }
-
         break;
 
     case MQTT_EVENT_ERROR:
@@ -1758,6 +1773,7 @@ static void topic_publish_task(void *param)
                 ESP_LOGI(tag, "System topic: %s", str);
                 if (mqttConnected && mqttClient != NULL)
                 {
+                    mqttPublish(mqttClient, mqttTopicCheckOnline, "online", mqttTopicCheckOnlineQoS, mqttTopicCheckOnlineRet);
                     mqttPublish(mqttClient, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
                 }
                 free(str);
@@ -1775,6 +1791,7 @@ static void topic_publish_task(void *param)
                 ESP_LOGI(tag, "Status topic: %s", str);
                 if (mqttConnected && mqttClient != NULL)
                 {
+                    mqttPublish(mqttClient, mqttTopicCheckOnline, "online", mqttTopicCheckOnlineQoS, mqttTopicCheckOnlineRet);
                     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
                 }
                 free(str);
@@ -2130,75 +2147,75 @@ static void calibrate_task(void *param)
 // Задача светодиодной индикации режимов работы
 static void led_task(void *param)
 {
-    // EventBits_t uxBits;
-    // const char *tag = "led_task";
-    // ESP_LOGI(tag, "started...");
+    EventBits_t uxBits;
+    const char *tag = "led_task";
+    ESP_LOGI(tag, "started...");
 
-    // while (1)
-    // {
-    //     uxBits = xEventGroupGetBits(event_group);
+    while (1)
+    {
+        uxBits = xEventGroupGetBits(event_group);
 
-    //     // Моргаем коротко по 1 разу при начале конфигурации smartconfig
-    //     if ((uxBits & SC_START_BIT) != 0)
-    //     {
-    //         gpio_set_level(LED_STATUS, 1);
-    //         vTaskDelay(pdMS_TO_TICKS(25));
-    //         gpio_set_level(LED_STATUS, 0);
-    //         vTaskDelay(pdMS_TO_TICKS(500));
-    //     }
+        // Моргаем коротко по 1 разу при начале конфигурации smartconfig
+        if ((uxBits & SC_START_BIT) != 0)
+        {
+            gpio_set_level(LED_STATUS, 1);
+            vTaskDelay(pdMS_TO_TICKS(25));
+            gpio_set_level(LED_STATUS, 0);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
 
-    //     // Моргаем в 2 раза быстрее когда найден смартфон
-    //     else if ((uxBits & SC_FOUND_BIT) != 0)
-    //     {
-    //         gpio_set_level(LED_STATUS, 1);
-    //         vTaskDelay(pdMS_TO_TICKS(25));
-    //         gpio_set_level(LED_STATUS, 0);
-    //         vTaskDelay(pdMS_TO_TICKS(250));
-    //     }
-    //     // Моргаем длинно пока подключаемся к сети
-    //     else if ((uxBits & WIFI_START_BIT) != 0)
-    //     {
-    //         gpio_set_level(LED_STATUS, 1);
-    //         vTaskDelay(pdMS_TO_TICKS(500));
-    //         gpio_set_level(LED_STATUS, 0);
-    //         vTaskDelay(pdMS_TO_TICKS(500));
-    //     }
-    //     // Моргаем коротко по 2 раза когда началось обновление
-    //     else if ((uxBits & OTA_START_BIT) != 0)
-    //     {
-    //         gpio_set_level(LED_STATUS, 1);
-    //         vTaskDelay(pdMS_TO_TICKS(50));
-    //         gpio_set_level(LED_STATUS, 0);
-    //         vTaskDelay(pdMS_TO_TICKS(50));
-    //         gpio_set_level(LED_STATUS, 1);
-    //         vTaskDelay(pdMS_TO_TICKS(50));
-    //         gpio_set_level(LED_STATUS, 0);
+        // Моргаем в 2 раза быстрее когда найден смартфон
+        else if ((uxBits & SC_FOUND_BIT) != 0)
+        {
+            gpio_set_level(LED_STATUS, 1);
+            vTaskDelay(pdMS_TO_TICKS(25));
+            gpio_set_level(LED_STATUS, 0);
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
+        // Моргаем длинно пока подключаемся к сети
+        else if ((uxBits & WIFI_START_BIT) != 0)
+        {
+            gpio_set_level(LED_STATUS, 1);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            gpio_set_level(LED_STATUS, 0);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        // Моргаем коротко по 2 раза когда началось обновление
+        else if ((uxBits & OTA_START_BIT) != 0)
+        {
+            gpio_set_level(LED_STATUS, 1);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            gpio_set_level(LED_STATUS, 0);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            gpio_set_level(LED_STATUS, 1);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            gpio_set_level(LED_STATUS, 0);
 
-    //         vTaskDelay(pdMS_TO_TICKS(1000));
-    //     }
-    //     // Моргаем в 2 раза быстрее когда подключились к серверу обновлений
-    //     else if ((uxBits & OTA_CONNECT_BIT) != 0)
-    //     {
-    //         gpio_set_level(LED_STATUS, 1);
-    //         vTaskDelay(pdMS_TO_TICKS(50));
-    //         gpio_set_level(LED_STATUS, 0);
-    //         vTaskDelay(pdMS_TO_TICKS(50));
-    //         gpio_set_level(LED_STATUS, 1);
-    //         vTaskDelay(pdMS_TO_TICKS(50));
-    //         gpio_set_level(LED_STATUS, 0);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+        // Моргаем в 2 раза быстрее когда подключились к серверу обновлений
+        else if ((uxBits & OTA_CONNECT_BIT) != 0)
+        {
+            gpio_set_level(LED_STATUS, 1);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            gpio_set_level(LED_STATUS, 0);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            gpio_set_level(LED_STATUS, 1);
+            vTaskDelay(pdMS_TO_TICKS(50));
+            gpio_set_level(LED_STATUS, 0);
 
-    //         vTaskDelay(pdMS_TO_TICKS(500));
-    //     }
-    //     // Зажигаем светодиод при режиме переинициализации или после обновления OTA
-    //     else if (((uxBits & REINIT_BIT) != 0) || ((uxBits & OTA_FINISH_BIT) != 0))
-    //     {
-    //         gpio_set_level(LED_STATUS, 1);
-    //         vTaskDelay(pdMS_TO_TICKS(2000));
-    //     }
-    //     else
-    //         gpio_set_level(LED_STATUS, 0);
-    // }
-    // vTaskDelete(NULL);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        // Зажигаем светодиод при режиме переинициализации или после обновления OTA
+        else if (((uxBits & REINIT_BIT) != 0) || ((uxBits & OTA_FINISH_BIT) != 0))
+        {
+            gpio_set_level(LED_STATUS, 1);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+        else
+            gpio_set_level(LED_STATUS, 0);
+    }
+    vTaskDelete(NULL);
 }
 
 // Задача опроса кнопки инициализации
@@ -2368,12 +2385,12 @@ static void timer1_cb(TimerHandle_t pxTimer)
             // Преобразуем текущую дату в читаемый вид
             strftime(_status.current_time, sizeof(_status.current_time), "%d.%m.%Y %H:%M:%S", tm_now);
             // Запоминаем время запуска
-            if(!isStarted) 
+            if (!isStarted)
             {
                 strftime(_status.last_started, sizeof(_status.last_started), "%d.%m.%Y %H:%M:%S", tm_now);
                 isStarted = true;
             }
-            
+
             // Выводим данные в консоль
             printf("\rSystem is active. Time now %s Working time %lld sec. Free heap %0.1f %%", _status.current_time, _status.working_time, esp_heap_free_percent());
             fflush(stdout);
