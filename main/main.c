@@ -1582,7 +1582,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 
         cJSON *str = cJSON_Parse(ow_data);
         cJSON *sys = cJSON_GetObjectItemCaseSensitive(str, "sys");
-        if(sys != NULL)
+        if (sys != NULL)
         {
             int cod = cJSON_GetObjectItemCaseSensitive(str, "cod")->valueint;
             if (cod == 200)
@@ -1609,6 +1609,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
                 ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_ow_updated);
             }
         }
+        free(ow_data);
         break;
 
     default:
