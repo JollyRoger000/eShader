@@ -68,8 +68,6 @@ extern const uint8_t tg_org_pem_end[] asm("_binary_api_telegram_org_pem_end");
 #define OTA_START_BIT BIT11     // Бит начала процесса обновления
 #define OTA_CONNECT_BIT BIT12   // Бит подключения к серверу
 #define OTA_FINISH_BIT BIT13    // Бит завершения обновления
-#define OW_REFRESH_BIT BIT14    // Бит обновления данных openweather
-#define TOPIC_STATUS_BIT BIT15  // Бит публикации топика статуса
 #define TOPIC_SYSTEM_BIT BIT16  // Бит публикации системного топика
 
 const int mqttPort = 15476;
@@ -237,7 +235,6 @@ static bool ssid_loaded = false;
 static bool password_loaded = false;
 static bool time_sync = false;
 static bool mqttConnected = false;
-static bool owUpdated = false;
 static bool isStarted = false;
 
 static struct tm *tm_now;
@@ -255,13 +252,13 @@ static void calibrate_task(void *param);
 static void smartconfig_task(void *param);
 static void openweather_task(void *param);
 static void wifi_connect_task(void *param);
+static void publish_task(void *params);
 static void ota_task(void *param);
 static void led_task(void *param);
 static void init_btn_task(void *param);
-static void topic_publish_task(void *param);
+static bool mqttPublish(esp_mqtt_client_handle_t client, char *topic, char *data, int qos, int retain);
 static char *mqttStatusJson(StatusStruct status);
 static char *mqttSystemJson(SystemStruct status);
-static bool get_sunrise_sunset(const char *json_string);
 static esp_err_t nvs_write_u8(char *key, uint8_t val);
 static esp_err_t nvs_write_u16(char *key, uint16_t val);
 static esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client);
@@ -397,7 +394,7 @@ static void onCalibrate()
     _status.cal_status = 0;
 
     // Публикуем топик статуса
-    xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+    mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
     // Запускаем задачу калибровки
     xTaskCreate(calibrate_task, "calibrate_task", 4096, NULL, 3, &calibrate_task_handle);
 }
@@ -426,7 +423,7 @@ static void onStop()
         nvs_write_u16("target_pos", _status.target_pos);
 
         // Публикуем топик статуса
-        xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+        mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
     }
     else if (!strcmp(_status.move_status, "opening") || !strcmp(_status.move_status, "closing"))
     {
@@ -439,7 +436,7 @@ static void onStop()
         nvs_write_u16("target_pos", _status.target_pos);
 
         // Публикуем топик статуса
-        xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+        mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
     }
     else
     {
@@ -465,7 +462,7 @@ static void onShade(int shade)
     }
 
     /// Публикуем топик статуса
-    xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+    mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
 }
 
 static void time_sync_start(const char *tz)
@@ -671,52 +668,6 @@ static esp_err_t nvs_write_str(char *key, char *val)
     return err;
 }
 
-/* Функция обработчик событий HTTP */
-static esp_err_t http_event_handler(esp_http_client_event_t *evt)
-{
-    const char *tag = "http_event_handler";
-
-    switch (evt->event_id)
-    {
-    case HTTP_EVENT_ON_DATA:
-        // Resize the buffer to fit the new chunk of data
-        ESP_LOGI(tag, "HTTP_EVENT_ON_DATA message");
-
-        ow_data = realloc(ow_data, ow_len + evt->data_len);
-        memcpy(ow_data + ow_len, evt->data, evt->data_len);
-        ow_len += evt->data_len;
-        break;
-
-    case HTTP_EVENT_ON_FINISH:
-        ESP_LOGI(tag, "HTTP_EVENT_ON_FINISH message");
-        if (ow_data != NULL)
-        {
-            ESP_LOGI(tag, "OpenWeatherAPI received data: %s", ow_data);
-
-            /* Выделяем из ответа время заката/восхода, преобразуем в JSON и публикуем */
-            if (get_sunrise_sunset(ow_data))
-            {
-                ESP_LOGI(tag, "get_sunrise_sunset success");
-                // Публикуем топик статуса
-                xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
-            }
-            else
-            {
-                ESP_LOGE(tag, "get_sunrise_sunset error");
-            }
-            free(ow_data);
-        }
-        else
-            ESP_LOGE(tag, "OpenWeatherAPI received data is NULL");
-        break;
-
-    default:
-        break;
-    }
-
-    return ESP_OK;
-}
-
 // Функция подписки на топики
 static bool mqttSubscribe(esp_mqtt_client_handle_t client, char *topic, int qos)
 {
@@ -761,8 +712,19 @@ static bool mqttPublish(esp_mqtt_client_handle_t client, char *topic, char *data
     }
 }
 
-// Функция обработчик событий MQTT
-
+static void publish_task(void *params)
+{
+    while (true)
+    {
+        if (mqttConnected)
+        {
+            char *str = mqttStatusJson(_status);
+            mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+            free(str);
+        }
+        vTaskDelay(pdMS_TO_TICKS(60000));
+    }
+}
 /* Инициализация клиента MQTT */
 static void mqtt_start(void)
 {
@@ -984,7 +946,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     ESP_LOGW(tag, "Get status topic received");
 
                     // Публикуем топик статуса
-                    xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+                    mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
                 }
             }
 
@@ -997,7 +959,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Add sunrise topic received. Set shade on sunrise: %d", _status.shade_sunrise);
 
                 // Публикуем топик статуса
-                xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+                mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
 
                 nvs_write_u8("shade_sunrise", _status.shade_sunrise);
                 nvs_write_u8("on_sunrise", _status.on_sunrise);
@@ -1012,7 +974,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Add sunset topic received. Set shade on sunset: %d", _status.shade_sunset);
 
                 // Публикуем топик статуса
-                xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+                mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
 
                 nvs_write_u8("shade_sunset", _status.shade_sunset);
                 nvs_write_u8("on_sunset", _status.on_sunset);
@@ -1025,7 +987,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Delete sunrise topic received");
 
                 // Публикуем топик статуса
-                xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+                mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
                 nvs_write_u8("on_sunrise", _status.on_sunrise);
             }
 
@@ -1036,7 +998,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Delete sunset topic received");
 
                 // Публикуем топик статуса
-                xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+                mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
                 nvs_write_u8("on_sunset", _status.on_sunset);
             }
 
@@ -1314,9 +1276,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                     // Публикуем системный топик
                     xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
-
-                    // Выставляем бит для задачи openweather_task
-                    xEventGroupSetBits(event_group, OW_REFRESH_BIT);
                 }
                 else
                 {
@@ -1337,9 +1296,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                     // Публикуем системный топик
                     xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
-
-                    // Выставляем бит для задачи openweather_task
-                    xEventGroupSetBits(event_group, OW_REFRESH_BIT);
                 }
                 else
                 {
@@ -1604,86 +1560,30 @@ static void ota_event_handler(void *arg, esp_event_base_t event_base, int32_t ev
     }
 }
 
-/* Задача запроса данных openweathermap */
-static void openweather_task(void *param)
+/* Функция обработчик событий HTTP */
+static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
-    const char *tag = "openweather_task";
-    char url[200];
-    esp_http_client_handle_t client;
-    EventBits_t uxBits;
+    const char *tag = "http_event_handler";
 
-    while (1)
+    switch (evt->event_id)
     {
-        vTaskDelay(pdMS_TO_TICKS(10000));
-        uxBits = xEventGroupWaitBits(event_group, OW_REFRESH_BIT, true, false, portMAX_DELAY);
-        if (uxBits & OW_REFRESH_BIT)
-        {
-            memset(url, 0, sizeof(url));
-            snprintf(url,
-                     sizeof(url),
-                     "%s%s%s%s%s%s%s",
-                     "https://api.openweathermap.org/data/2.5/weather?q=",
-                     _system.city,
-                     ",",
-                     _system.country,
-                     "&units=metric",
-                     "&APPID=",
-                     _system.ow_key);
+    case HTTP_EVENT_ON_DATA:
+        // Resize the buffer to fit the new chunk of data
+        ESP_LOGI(tag, "HTTP_EVENT_ON_DATA message");
 
-            ESP_LOGI(tag, "Task started from url: %s", url);
+        ow_data = realloc(ow_data, ow_len + evt->data_len);
+        memcpy(ow_data + ow_len, evt->data, evt->data_len);
+        ow_len += evt->data_len;
+        break;
 
-            esp_http_client_config_t config = {
-                .url = url,
-                .method = HTTP_METHOD_GET,
-                .event_handler = http_event_handler,
-                .timeout_ms = 60000,
-                .cert_pem = (char *)owmap_org_pem_start,
-                .cert_len = owmap_org_pem_end - owmap_org_pem_start,
-                .transport_type = HTTP_TRANSPORT_OVER_SSL,
-            };
+    case HTTP_EVENT_ON_FINISH:
+        ESP_LOGI(tag, "HTTP_EVENT_ON_FINISH message");
+        ESP_LOGI(tag, "OpenWeatherAPI received data: %s", ow_data);
 
-            client = esp_http_client_init(&config);
-            esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
-
-            esp_err_t err = esp_http_client_perform(client);
-            if (err == ESP_OK)
-            {
-                int status_code = esp_http_client_get_status_code(client);
-                if (status_code == 200)
-                {
-                    ESP_LOGI(tag, "Status code success: %d", status_code);
-                    owUpdated = true;
-                }
-                else
-                {
-                    ESP_LOGE(tag, "Status code error: %d", status_code);
-                    owUpdated = false;
-                }
-            }
-            else
-            {
-                ESP_LOGE(tag, "Perform OpenWeather API Request Error");
-                owUpdated = false;
-            }
-            esp_http_client_cleanup(client);
-        }
-    }
-    vTaskDelete(NULL);
-}
-
-/* Выделяем из ответа openweather api данные о времени заката и восхода и записываем в структуру статуса */
-static bool get_sunrise_sunset(const char *json_string)
-{
-    char *tag = "get_ss_time";
-    // Парсим JSON строку
-    cJSON *str = cJSON_Parse(json_string);
-    if (str != NULL)
-    {
-
+        cJSON *str = cJSON_Parse(ow_data);
         cJSON *sys = cJSON_GetObjectItemCaseSensitive(str, "sys");
-        if (sys != NULL)
+        if(sys != NULL)
         {
-
             int cod = cJSON_GetObjectItemCaseSensitive(str, "cod")->valueint;
             if (cod == 200)
             {
@@ -1694,115 +1594,84 @@ static bool get_sunrise_sunset(const char *json_string)
                 // Переводим из UNIX формата в читаемый
                 struct tm *tm_sunrise;
                 tm_sunrise = localtime(&_status.sunrise_time_unix);
-                if (tm_sunrise != NULL)
-                {
-                    strftime(_status.sunrise_time, sizeof(_status.sunrise_time), "%H:%M:%S", tm_sunrise);
-                    ESP_LOGI(tag, "Time sunrise: %s", _status.sunrise_time);
-                }
-                else
-                {
-                    ESP_LOGE(tag, "tm_sunrise NULL pointer");
-                    return false;
-                }
+                strftime(_status.sunrise_time, sizeof(_status.sunrise_time), "%H:%M:%S", tm_sunrise);
+                ESP_LOGI(tag, "Time sunrise: %s", _status.sunrise_time);
 
                 struct tm *tm_sunset;
                 tm_sunset = localtime(&_status.sunset_time_unix);
-                if (tm_sunset != NULL)
-                {
-                    strftime(_status.sunset_time, sizeof(_status.sunset_time), "%H:%M:%S", tm_sunset);
-                    ESP_LOGI(tag, "Time sunset: %s", _status.sunset_time);
-                }
-                else
-                {
-                    ESP_LOGE(tag, "tm_sunset NULL pointer");
-                    return false;
-                }
+                strftime(_status.sunset_time, sizeof(_status.sunset_time), "%H:%M:%S", tm_sunset);
+                ESP_LOGI(tag, "Time sunset: %s", _status.sunset_time);
 
                 time_t now;
                 time(&now);
                 tm_now = localtime(&now);
-                if (tm_now != NULL)
-                {
-                    strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
-                    ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_ow_updated);
-                }
-                else
-                {
-                    ESP_LOGE(tag, "tm_now NULL pointer");
-                    return false;
-                }
-                return true;
+                strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
+                ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_ow_updated);
             }
-            else
-            {
-                ESP_LOGE(tag, "Wrong OpenWeather API request code: %d", cod);
-                return false;
-            }
-            cJSON_Delete(str);
         }
-        else
-        {
-            ESP_LOGE(tag, "sys NULL pointer");
-            return false;
-        }
+        break;
+
+    default:
+        break;
     }
-    else
-    {
-        ESP_LOGE(tag, "str NULL pointer");
-        return false;
-    }
+
+    return ESP_OK;
 }
 
-// Задача публикации топика
-static void topic_publish_task(void *param)
+/* Задача запроса данных openweathermap */
+static void openweather_task(void *param)
 {
-    const char *tag = "topic_publish_task";
-    EventBits_t uxBits;
-    char *str = NULL;
-
-    ESP_LOGI(tag, "started...");
+    const char *tag = "openweather_task";
+    char url[200];
 
     while (1)
     {
-        uxBits = xEventGroupWaitBits(event_group, TOPIC_STATUS_BIT | TOPIC_SYSTEM_BIT, true, false, portMAX_DELAY);
-        if (uxBits & TOPIC_SYSTEM_BIT)
+        memset(url, 0, sizeof(url));
+        snprintf(url,
+                 sizeof(url),
+                 "%s%s%s%s%s%s%s",
+                 "https://api.openweathermap.org/data/2.5/weather?q=",
+                 _system.city,
+                 ",",
+                 _system.country,
+                 "&units=metric",
+                 "&APPID=",
+                 _system.ow_key);
+
+        ESP_LOGI(tag, "Task started from url: %s", url);
+
+        esp_http_client_config_t config = {
+            .url = url,
+            .method = HTTP_METHOD_GET,
+            .event_handler = http_event_handler,
+            .cert_pem = (char *)owmap_org_pem_start,
+            .cert_len = owmap_org_pem_end - owmap_org_pem_start,
+            .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        };
+
+        esp_http_client_handle_t client = esp_http_client_init(&config);
+        esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+
+        esp_err_t err = esp_http_client_perform(client);
+        if (err == ESP_OK)
         {
-            str = mqttSystemJson(_system);
-            if (str != NULL)
+            int status_code = esp_http_client_get_status_code(client);
+            if (status_code == 200)
             {
-                ESP_LOGI(tag, "System topic: %s", str);
-                if (mqttConnected && mqttClient != NULL)
-                {
-                    mqttPublish(mqttClient, mqttTopicCheckOnline, "online", mqttTopicCheckOnlineQoS, mqttTopicCheckOnlineRet);
-                    mqttPublish(mqttClient, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
-                }
-                free(str);
+                ESP_LOGI(tag, "Status code success: %d", status_code);
             }
             else
             {
-                ESP_LOGE(tag, "NULL pointer");
+                ESP_LOGE(tag, "Status code error: %d", status_code);
             }
         }
-        if (uxBits & TOPIC_STATUS_BIT)
+        else
         {
-            str = mqttStatusJson(_status);
-            if (str != NULL)
-            {
-                ESP_LOGI(tag, "Status topic: %s", str);
-                if (mqttConnected && mqttClient != NULL)
-                {
-                    mqttPublish(mqttClient, mqttTopicCheckOnline, "online", mqttTopicCheckOnlineQoS, mqttTopicCheckOnlineRet);
-                    mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-                }
-                free(str);
-            }
-            else
-            {
-                ESP_LOGE(tag, "NULL pointer");
-            }
+            ESP_LOGE(tag, "Perform OpenWeather API Request Error");
         }
+        esp_http_client_cleanup(client);
+        vTaskDelay(pdMS_TO_TICKS(600000));
     }
-    vTaskDelete(NULL);
 }
 
 /* Задача конфигурации с помощью SC SmartConfig*/
@@ -1960,7 +1829,7 @@ static void ota_task(void *param)
             // Сохраняем новое значение
             nvs_write_str("last_updated", _system.last_updated);
 
-            vTaskDelay(2000 / portTICK_PERIOD_MS);
+            vTaskDelay(pdMS_TO_TICKS(2000));
             esp_restart();
         }
         else
@@ -2105,7 +1974,7 @@ static void move_task(void *param)
     nvs_write_u16("target_pos", _status.target_pos);
 
     // Публикуем топик статуса
-    xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+    mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
 
     vTaskDelete(NULL);
 }
@@ -2139,7 +2008,7 @@ static void calibrate_task(void *param)
     strcpy(_status.move_status, "stopped");
 
     // Публикуем топик статуса
-    xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
+    mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
 
     vTaskDelete(NULL);
 }
@@ -2213,7 +2082,10 @@ static void led_task(void *param)
             vTaskDelay(pdMS_TO_TICKS(2000));
         }
         else
+        {
             gpio_set_level(LED_STATUS, 0);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
     }
     vTaskDelete(NULL);
 }
@@ -2399,18 +2271,6 @@ static void timer1_cb(TimerHandle_t pxTimer)
             if (!mqttConnected)
                 mqtt_start();
 
-            // Повторяем запрос openweather каждые 10 минут если предыдущее обновление неудачно
-            if (!owUpdated && tm_now->tm_min == 10 && tm_now->tm_sec == 0)
-            {
-                xEventGroupSetBits(event_group, OW_REFRESH_BIT);
-            }
-
-            // Обновляем запрос времени восходя/заката в полночь
-            if (tm_now->tm_hour == 0 && tm_now->tm_min == 0 && tm_now->tm_sec == 0)
-            {
-                owUpdated = false;
-                xEventGroupSetBits(event_group, OW_REFRESH_BIT);
-            }
             if (_status.on_sunrise == 1 && now == _status.sunrise_time_unix)
             {
                 _status.shade = _status.shade_sunrise;
@@ -2435,24 +2295,6 @@ static void timer1_cb(TimerHandle_t pxTimer)
         {
             esp_restart();
         }
-    }
-}
-
-/* Обработчик событий программного таймера c периодоим 1 минута */
-static void timer2_cb(TimerHandle_t pxTimer)
-{
-    const char *tag = "timer_2";
-
-    time_t now;
-    time(&now);
-    tm_now = localtime(&now);
-    if (tm_now != NULL)
-    {
-        strftime(_status.current_time, sizeof(_status.current_time), "%d.%m.%Y %H:%M:%S", tm_now);
-
-        // Публикуем топик статуса
-        xEventGroupSetBits(event_group, TOPIC_STATUS_BIT);
-        // tgSend();
     }
 }
 
@@ -2807,10 +2649,10 @@ void app_main(void)
 
     wifi_init();
 
-    // xTaskCreate(led_task, "led_task", 2048, NULL, 3, NULL);
-    // xTaskCreate(init_btn_task, "init_btn_task", 2048, NULL, 3, NULL);
+    xTaskCreate(led_task, "led_task", 2048, NULL, 3, NULL);
+    xTaskCreate(init_btn_task, "init_btn_task", 2048, NULL, 3, NULL);
     xTaskCreate(openweather_task, "openweather_task", 8000, NULL, 3, NULL);
-    xTaskCreate(topic_publish_task, "topic_publish_task", 4096, NULL, 3, NULL);
+    xTaskCreate(publish_task, "publish_task", 4096, NULL, 3, NULL);
 
     // Создаем программный таймер с периодом 1 секунда
     timer1_handle = xTimerCreate(
@@ -2820,22 +2662,9 @@ void app_main(void)
         NULL,
         timer1_cb);
 
-    // Создаем программный таймер с периодом 5 минут для периодической отправки статуса соединения
-    timer2_handle = xTimerCreate(
-        "Timer_1m",
-        pdMS_TO_TICKS(60000),
-        pdTRUE,
-        NULL,
-        timer2_cb);
-
-    // Запускаем таймеры
+    // Запускаем таймер
     if (xTimerStart(timer1_handle, 0) == pdPASS)
     {
         ESP_LOGI(tag, "timer 1 started...");
-    }
-
-    if (xTimerStart(timer2_handle, 0) == pdPASS)
-    {
-        ESP_LOGI(tag, "timer 2 started...");
     }
 }
