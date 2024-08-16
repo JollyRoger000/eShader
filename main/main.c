@@ -68,7 +68,6 @@ extern const uint8_t tg_org_pem_end[] asm("_binary_api_telegram_org_pem_end");
 #define OTA_START_BIT BIT11     // Бит начала процесса обновления
 #define OTA_CONNECT_BIT BIT12   // Бит подключения к серверу
 #define OTA_FINISH_BIT BIT13    // Бит завершения обновления
-#define TOPIC_SYSTEM_BIT BIT16  // Бит публикации системного топика
 
 const int mqttPort = 15476;
 const int mqttTlsPort = 15477;
@@ -243,7 +242,6 @@ static void mqtt_start(void);
 static void time_sync_start(const char *tz);
 static void time_sync_cb(struct timeval *tv);
 static void timer1_cb(TimerHandle_t pxTimer);
-static void timer2_cb(TimerHandle_t pxTimer);
 static void onCalibrate();
 static void onStop();
 static void onShade(int shade);
@@ -1031,7 +1029,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         ESP_LOGW(tag, "Get system data topic received");
 
                         // Публикуем системный топик
-                        xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+                        mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
                     }
 
                     // Запрос на перезагрузку
@@ -1076,7 +1074,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         nvs_write_u16("max_steps", _system.max_steps);
 
                         // Публикуем системный топик
-                        xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+                        mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
                     }
                     else
                     {
@@ -1101,7 +1099,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("ow_key", _system.ow_key);
 
                     // Публикуем системный топик
-                    xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
                 }
                 else
                 {
@@ -1121,7 +1119,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("tg_key", _system.tg_key);
 
                     // Публикуем системный топик
-                    xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
                 }
                 else
                 {
@@ -1178,11 +1176,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         nvs_write_str("update_url", _system.update_url);
 
                         // Публикуем системный топик
-                        xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+                        mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
 
                         // Все выключаем
                         xTimerStop(timer1_handle, 0);
-                        xTimerStop(timer2_handle, 0);
 
                         // Запускаем обновление
                         xTaskCreate(&ota_task, "ota_task", 4096, NULL, 3, NULL);
@@ -1192,7 +1189,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         ESP_LOGE(tag, "Invalid url");
                         strcpy(_system.update_url, "invalid_url");
                         //  Публикуем системный топик
-                        xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+                        mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
                     }
                 }
                 else
@@ -1213,7 +1210,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("server_time1", _system.time_server1);
 
                     // Публикуем системный топик
-                    xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
                 }
                 else
                 {
@@ -1233,7 +1230,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("server_time2", _system.time_server2);
 
                     // Публикуем системный топик
-                    xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
                 }
                 else
                 {
@@ -1254,7 +1251,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("timezone", _system.timezone);
 
                     // Публикуем системный топик
-                    xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
                 }
                 else
                 {
@@ -1275,7 +1272,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("city", _system.city);
 
                     // Публикуем системный топик
-                    xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
                 }
                 else
                 {
@@ -1295,7 +1292,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("country", _system.country);
 
                     // Публикуем системный топик
-                    xEventGroupSetBits(event_group, TOPIC_SYSTEM_BIT);
+                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
                 }
                 else
                 {
@@ -1579,7 +1576,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     case HTTP_EVENT_ON_FINISH:
         ESP_LOGI(tag, "HTTP_EVENT_ON_FINISH message");
         ESP_LOGI(tag, "OpenWeatherAPI received data: %s", ow_data);
-
+        
         cJSON *str = cJSON_Parse(ow_data);
         cJSON *sys = cJSON_GetObjectItemCaseSensitive(str, "sys");
         if (sys != NULL)
@@ -1607,9 +1604,11 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
                 tm_now = localtime(&now);
                 strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
                 ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_ow_updated);
+                
+                free(ow_data);
             }
         }
-        free(ow_data);
+        
         break;
 
     default:
@@ -1627,51 +1626,54 @@ static void openweather_task(void *param)
 
     while (1)
     {
-        memset(url, 0, sizeof(url));
-        snprintf(url,
-                 sizeof(url),
-                 "%s%s%s%s%s%s%s",
-                 "https://api.openweathermap.org/data/2.5/weather?q=",
-                 _system.city,
-                 ",",
-                 _system.country,
-                 "&units=metric",
-                 "&APPID=",
-                 _system.ow_key);
-
-        ESP_LOGI(tag, "Task started from url: %s", url);
-
-        esp_http_client_config_t config = {
-            .url = url,
-            .method = HTTP_METHOD_GET,
-            .event_handler = http_event_handler,
-            .cert_pem = (char *)owmap_org_pem_start,
-            .cert_len = owmap_org_pem_end - owmap_org_pem_start,
-            .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        };
-
-        esp_http_client_handle_t client = esp_http_client_init(&config);
-        esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
-
-        esp_err_t err = esp_http_client_perform(client);
-        if (err == ESP_OK)
+        if (time_sync)
         {
-            int status_code = esp_http_client_get_status_code(client);
-            if (status_code == 200)
+            memset(url, 0, sizeof(url));
+            snprintf(url,
+                     sizeof(url),
+                     "%s%s%s%s%s%s%s",
+                     "https://api.openweathermap.org/data/2.5/weather?q=",
+                     _system.city,
+                     ",",
+                     _system.country,
+                     "&units=metric",
+                     "&APPID=",
+                     _system.ow_key);
+
+            ESP_LOGI(tag, "Task started from url: %s", url);
+
+            esp_http_client_config_t config = {
+                .url = url,
+                .method = HTTP_METHOD_GET,
+                .event_handler = http_event_handler,
+                .cert_pem = (char *)owmap_org_pem_start,
+                .cert_len = owmap_org_pem_end - owmap_org_pem_start,
+                .transport_type = HTTP_TRANSPORT_OVER_SSL,
+            };
+
+            esp_http_client_handle_t client = esp_http_client_init(&config);
+            esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+
+            esp_err_t err = esp_http_client_perform(client);
+            if (err == ESP_OK)
             {
-                ESP_LOGI(tag, "Status code success: %d", status_code);
+                int status_code = esp_http_client_get_status_code(client);
+                if (status_code == 200)
+                {
+                    ESP_LOGI(tag, "Status code success: %d", status_code);
+                }
+                else
+                {
+                    ESP_LOGE(tag, "Status code error: %d", status_code);
+                }
             }
             else
             {
-                ESP_LOGE(tag, "Status code error: %d", status_code);
+                ESP_LOGE(tag, "Perform OpenWeather API Request Error");
             }
+            esp_http_client_cleanup(client);
         }
-        else
-        {
-            ESP_LOGE(tag, "Perform OpenWeather API Request Error");
-        }
-        esp_http_client_cleanup(client);
-        vTaskDelay(pdMS_TO_TICKS(600000));
+        vTaskDelay(pdMS_TO_TICKS(300000));
     }
 }
 
