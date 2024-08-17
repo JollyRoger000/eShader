@@ -20,6 +20,7 @@
 #include <driver/gpio.h>
 #include <rom/ets_sys.h>
 #include "esp_tls.h"
+#include <esp_http_server.h>
 
 #define SM_DIR 19
 #define SM_STEP 17
@@ -392,7 +393,9 @@ static void onCalibrate()
     _status.cal_status = 0;
 
     // Публикуем топик статуса
-    mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
+    char *str = mqttStatusJson(_status);
+    mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+    free(str);
     // Запускаем задачу калибровки
     xTaskCreate(calibrate_task, "calibrate_task", 4096, NULL, 3, &calibrate_task_handle);
 }
@@ -421,7 +424,9 @@ static void onStop()
         nvs_write_u16("target_pos", _status.target_pos);
 
         // Публикуем топик статуса
-        mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
+        char *str = mqttStatusJson(_status);
+        mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+        free(str);
     }
     else if (!strcmp(_status.move_status, "opening") || !strcmp(_status.move_status, "closing"))
     {
@@ -434,7 +439,9 @@ static void onStop()
         nvs_write_u16("target_pos", _status.target_pos);
 
         // Публикуем топик статуса
-        mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
+        char *str = mqttStatusJson(_status);
+        mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+        free(str);
     }
     else
     {
@@ -460,7 +467,9 @@ static void onShade(int shade)
     }
 
     /// Публикуем топик статуса
-    mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
+    char *str = mqttStatusJson(_status);
+    mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+    free(str);
 }
 
 static void time_sync_start(const char *tz)
@@ -944,7 +953,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     ESP_LOGW(tag, "Get status topic received");
 
                     // Публикуем топик статуса
-                    mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
+                    char *str = mqttStatusJson(_status);
+                    mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+                    free(str);
                 }
             }
 
@@ -957,7 +968,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Add sunrise topic received. Set shade on sunrise: %d", _status.shade_sunrise);
 
                 // Публикуем топик статуса
-                mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
+                char *str = mqttStatusJson(_status);
+                mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+                free(str);
 
                 nvs_write_u8("shade_sunrise", _status.shade_sunrise);
                 nvs_write_u8("on_sunrise", _status.on_sunrise);
@@ -972,7 +985,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Add sunset topic received. Set shade on sunset: %d", _status.shade_sunset);
 
                 // Публикуем топик статуса
-                mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
+                char *str = mqttStatusJson(_status);
+                mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+                free(str);
 
                 nvs_write_u8("shade_sunset", _status.shade_sunset);
                 nvs_write_u8("on_sunset", _status.on_sunset);
@@ -985,7 +1000,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Delete sunrise topic received");
 
                 // Публикуем топик статуса
-                mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
+                char *str = mqttStatusJson(_status);
+                mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+                free(str);
                 nvs_write_u8("on_sunrise", _status.on_sunrise);
             }
 
@@ -996,7 +1013,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Delete sunset topic received");
 
                 // Публикуем топик статуса
-                mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
+                char *str = mqttStatusJson(_status);
+                mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+                free(str);
                 nvs_write_u8("on_sunset", _status.on_sunset);
             }
 
@@ -1576,7 +1595,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     case HTTP_EVENT_ON_FINISH:
         ESP_LOGI(tag, "HTTP_EVENT_ON_FINISH message");
         ESP_LOGI(tag, "OpenWeatherAPI received data: %s", ow_data);
-        
+
         cJSON *str = cJSON_Parse(ow_data);
         cJSON *sys = cJSON_GetObjectItemCaseSensitive(str, "sys");
         if (sys != NULL)
@@ -1604,11 +1623,12 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
                 tm_now = localtime(&now);
                 strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
                 ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_ow_updated);
-                
-                free(ow_data);
+
+                ow_data = malloc(sizeof(char));
+                ow_len = 0;
             }
         }
-        
+
         break;
 
     default:
@@ -1648,30 +1668,38 @@ static void openweather_task(void *param)
                 .event_handler = http_event_handler,
                 .cert_pem = (char *)owmap_org_pem_start,
                 .cert_len = owmap_org_pem_end - owmap_org_pem_start,
+                //.crt_bundle_attach = esp_crt_bundle_attach,
                 .transport_type = HTTP_TRANSPORT_OVER_SSL,
             };
 
             esp_http_client_handle_t client = esp_http_client_init(&config);
-            esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
-
-            esp_err_t err = esp_http_client_perform(client);
-            if (err == ESP_OK)
+            if (client != NULL)
             {
-                int status_code = esp_http_client_get_status_code(client);
-                if (status_code == 200)
+                esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+
+                esp_err_t err = esp_http_client_perform(client);
+                if (err == ESP_OK)
                 {
-                    ESP_LOGI(tag, "Status code success: %d", status_code);
+                    int status_code = esp_http_client_get_status_code(client);
+                    if (status_code == 200)
+                    {
+                        ESP_LOGI(tag, "Status code success: %d", status_code);
+                    }
+                    else
+                    {
+                        ESP_LOGE(tag, "Status code error: %d", status_code);
+                    }
                 }
                 else
                 {
-                    ESP_LOGE(tag, "Status code error: %d", status_code);
+                    ESP_LOGE(tag, "Perform OpenWeather API Request Error");
                 }
+                esp_http_client_cleanup(client);
             }
             else
             {
-                ESP_LOGE(tag, "Perform OpenWeather API Request Error");
+                ESP_LOGE(tag, "NULL esp_http_client_init");
             }
-            esp_http_client_cleanup(client);
         }
         vTaskDelay(pdMS_TO_TICKS(300000));
     }
@@ -1977,7 +2005,9 @@ static void move_task(void *param)
     nvs_write_u16("target_pos", _status.target_pos);
 
     // Публикуем топик статуса
-    mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
+    char *str = mqttStatusJson(_status);
+    mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+    free(str);
 
     vTaskDelete(NULL);
 }
@@ -2011,7 +2041,9 @@ static void calibrate_task(void *param)
     strcpy(_status.move_status, "stopped");
 
     // Публикуем топик статуса
-    mqttPublish(mqttClient, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
+    char *str = mqttStatusJson(_status);
+    mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+    free(str);
 
     vTaskDelete(NULL);
 }
@@ -2299,6 +2331,32 @@ static void timer1_cb(TimerHandle_t pxTimer)
             esp_restart();
         }
     }
+}
+
+static httpd_handle_t start_webserver(void)
+{
+    const char *tag = "start_webserver";
+    httpd_handle_t server = NULL;
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+
+    config.lru_purge_enable = true;
+
+    // Start the httpd server
+    ESP_LOGI(tag, "Starting server on port: '%d'", config.server_port);
+    if (httpd_start(&server, &config) == ESP_OK)
+    {
+        // Set URI handlers
+        ESP_LOGI(tag, "Registering URI handlers");
+        // httpd_register_uri_handler(server, &hello);
+        // httpd_register_uri_handler(server, &echo);
+        // httpd_register_uri_handler(server, &ctrl);
+        // httpd_register_uri_handler(server, &any);
+
+        return server;
+    }
+
+    ESP_LOGI(tag, "Error starting server!");
+    return NULL;
 }
 
 void app_main(void)
