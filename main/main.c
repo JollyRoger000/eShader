@@ -38,6 +38,12 @@ extern const uint8_t owmap_org_pem_end[] asm("_binary_owmap_org_pem_end");
 extern const uint8_t tg_org_pem_start[] asm("_binary_api_telegram_org_pem_start");
 extern const uint8_t tg_org_pem_end[] asm("_binary_api_telegram_org_pem_end");
 
+// extern const uint8_t ss_pem_start[] asm("_binary_gts_root_r4_pem_start");
+// extern const uint8_t ss_pem_end[] asm("_binary_gts_root_r4_pem_end");
+
+extern const uint8_t ss_pem_start[] asm("_binary_sunrise_sunset_org_pem_start");
+extern const uint8_t ss_pem_end[] asm("_binary_sunrise_sunset_org_pem_end");
+
 #define TG_HOST "https://api.telegram.org"
 #define TG_PORT "443"
 #define TG_PATH "https://api.telegram.org/bot7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM/sendMessage"
@@ -238,6 +244,8 @@ static bool mqttConnected = false;
 static bool isStarted = false;
 
 static struct tm *tm_now;
+static struct tm *tm_sunset;
+static struct tm *tm_sunrise;
 
 static void mqtt_start(void);
 static void time_sync_start(const char *tz);
@@ -1598,36 +1606,28 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 
         cJSON *str = cJSON_Parse(ow_data);
         cJSON *sys = cJSON_GetObjectItemCaseSensitive(str, "sys");
-        if (sys != NULL)
-        {
-            int cod = cJSON_GetObjectItemCaseSensitive(str, "cod")->valueint;
-            if (cod == 200)
-            {
-                // Читаем timezone, sunset, sunrise в UNIX формате
-                _status.sunrise_time_unix = cJSON_GetObjectItemCaseSensitive(sys, "sunrise")->valueint;
-                _status.sunset_time_unix = cJSON_GetObjectItemCaseSensitive(sys, "sunset")->valueint;
 
-                // Переводим из UNIX формата в читаемый
-                struct tm *tm_sunrise;
-                tm_sunrise = localtime(&_status.sunrise_time_unix);
-                strftime(_status.sunrise_time, sizeof(_status.sunrise_time), "%H:%M:%S", tm_sunrise);
-                ESP_LOGI(tag, "Time sunrise: %s", _status.sunrise_time);
+        //Читаем timezone, sunset, sunrise в UNIX формате
+        _status.sunrise_time_unix = cJSON_GetObjectItemCaseSensitive(sys, "sunrise")->valueint;
+        _status.sunset_time_unix = cJSON_GetObjectItemCaseSensitive(sys, "sunset")->valueint;
 
-                struct tm *tm_sunset;
-                tm_sunset = localtime(&_status.sunset_time_unix);
-                strftime(_status.sunset_time, sizeof(_status.sunset_time), "%H:%M:%S", tm_sunset);
-                ESP_LOGI(tag, "Time sunset: %s", _status.sunset_time);
+        //Переводим из UNIX формата в читаемый
+        tm_sunrise = localtime(&_status.sunrise_time_unix);
+        strftime(_status.sunrise_time, sizeof(_status.sunrise_time), "%H:%M:%S", tm_sunrise);
+        ESP_LOGI(tag, "Time sunrise: %s", _status.sunrise_time);
 
-                time_t now;
-                time(&now);
-                tm_now = localtime(&now);
-                strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
-                ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_ow_updated);
+        tm_sunset = localtime(&_status.sunset_time_unix);
+        strftime(_status.sunset_time, sizeof(_status.sunset_time), "%H:%M:%S", tm_sunset);
+        ESP_LOGI(tag, "Time sunset: %s", _status.sunset_time);
 
-                ow_data = malloc(sizeof(char));
-                ow_len = 0;
-            }
-        }
+        time_t now;
+        time(&now);
+        tm_now = localtime(&now);
+        strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
+        ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_ow_updated);
+
+        cJSON_Delete(str);
+        free(ow_data);
 
         break;
 
@@ -1652,7 +1652,7 @@ static void openweather_task(void *param)
             snprintf(url,
                      sizeof(url),
                      "%s%s%s%s%s%s%s",
-                     "https://api.openweathermap.org/data/2.5/weather?q=",
+                     "http://api.openweathermap.org/data/2.5/weather?q=",
                      _system.city,
                      ",",
                      _system.country,
@@ -1660,17 +1660,32 @@ static void openweather_task(void *param)
                      "&APPID=",
                      _system.ow_key);
 
-            ESP_LOGI(tag, "Task started from url: %s", url);
-
             esp_http_client_config_t config = {
                 .url = url,
                 .method = HTTP_METHOD_GET,
                 .event_handler = http_event_handler,
-                .cert_pem = (char *)owmap_org_pem_start,
-                .cert_len = owmap_org_pem_end - owmap_org_pem_start,
+                // Указатели на сертификат
+                ///.cert_pem = (char *)ss_pem_start,
+                //.cert_len = ss_pem_end - ss_pem_start,
+                //.cert_pem = (char *)owmap_org_pem_start,
+                //.cert_len = owmap_org_pem_end - owmap_org_pem_start,
+                // Включаем транспорт через SSL
+                //.transport_type = HTTP_TRANSPORT_OVER_SSL,
+                // Отключаем глобальное хранилище сертификатов
+                //.use_global_ca_store = false,
+                //.crt_bundle_attach = NULL,
                 //.crt_bundle_attach = esp_crt_bundle_attach,
-                .transport_type = HTTP_TRANSPORT_OVER_SSL,
+                // Закрыть соединение после отправки всех данных
+                //.keep_alive_enable = false,
+                // Блокировка задачи на время выполнения
+                //.is_async = false,
+                // Таймаут передачи
+                //.timeout_ms = 60000,
+                // Разрешить автоматическую переадресацию без ограничений
+                //.disable_auto_redirect = false,
+                //.max_redirection_count = 0,
             };
+            ESP_LOGI(tag, "Task started from url: %s", config.url);
 
             esp_http_client_handle_t client = esp_http_client_init(&config);
             if (client != NULL)
@@ -1681,9 +1696,15 @@ static void openweather_task(void *param)
                 if (err == ESP_OK)
                 {
                     int status_code = esp_http_client_get_status_code(client);
-                    if (status_code == 200)
+                    if (status_code == HttpStatus_Ok)
                     {
                         ESP_LOGI(tag, "Status code success: %d", status_code);
+                        ow_data = malloc(sizeof(char));
+                        ow_len = 0;
+                    }
+                    else if (status_code == HttpStatus_Forbidden)
+                    {
+                        ESP_LOGE(tag, "Failed to send message, too many messages, please wait");
                     }
                     else
                     {
@@ -1692,16 +1713,12 @@ static void openweather_task(void *param)
                 }
                 else
                 {
-                    ESP_LOGE(tag, "Perform OpenWeather API Request Error");
+                    ESP_LOGE(tag, "Perform %s Request Error: %s", config.url, esp_err_to_name(err));
                 }
                 esp_http_client_cleanup(client);
             }
-            else
-            {
-                ESP_LOGE(tag, "NULL esp_http_client_init");
-            }
         }
-        vTaskDelay(pdMS_TO_TICKS(300000));
+        vTaskDelay(pdMS_TO_TICKS(600000));
     }
 }
 
