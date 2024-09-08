@@ -38,17 +38,11 @@ extern const uint8_t owmap_org_pem_end[] asm("_binary_owmap_org_pem_end");
 extern const uint8_t tg_org_pem_start[] asm("_binary_api_telegram_org_pem_start");
 extern const uint8_t tg_org_pem_end[] asm("_binary_api_telegram_org_pem_end");
 
-// extern const uint8_t ss_pem_start[] asm("_binary_gts_root_r4_pem_start");
-// extern const uint8_t ss_pem_end[] asm("_binary_gts_root_r4_pem_end");
-
 extern const uint8_t ss_pem_start[] asm("_binary_sunrise_sunset_org_pem_start");
 extern const uint8_t ss_pem_end[] asm("_binary_sunrise_sunset_org_pem_end");
 
-#define TG_HOST "https://api.telegram.org"
-#define TG_PORT "443"
-#define TG_PATH "https://api.telegram.org/bot7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM/sendMessage"
-#define API_TELEGRAM_TMPL_MESSAGE "{\"chat_id\":%s,\"parse_mode\":\"HTML\",\"disable_notification\":%s,\"text\":\"%s\r\n\r\n<code>%s</code>\"}"
-// #define API_TELEGRAM_TMPL_MESSAGE "{\"chat_id\":\"1090787677\",\"parse_mode\":\"HTML\",\"disable_notification\":\"false\"}"
+#define TELEGRAM_BOT_TOKEN "7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM"
+#define CHAT_ID "1090787677"
 
 #define DEFAULT_MAX_TIME_SYNC_WAITING 10
 #define DEFAULT_MAX_STEPS 30000
@@ -90,10 +84,8 @@ const char *mqttPass = "78C0pl7e";
 
 static char *mqttTopicCheckOnline = NULL;
 static char *mqttTopicControl = NULL;
-;
 static char *mqttTopicStatus = NULL;
 static char *mqttTopicTimers = NULL;
-;
 static char *mqttTopicAddTimer = NULL;
 static char *mqttTopicAddSunrise = NULL;
 static char *mqttTopicAddSunset = NULL;
@@ -109,6 +101,7 @@ static char *mqttTopicSystemServerTime2 = NULL;
 static char *mqttTopicSystemTimeZone = NULL;
 static char *mqttTopicSystemCountry = NULL;
 static char *mqttTopicSystemCity = NULL;
+static char *tgMessage = NULL;
 
 static int mqttTopicStatusQoS = 0;
 static int mqttTopicCheckOnlineQoS = 0;
@@ -243,6 +236,8 @@ static bool time_sync = false;
 static bool mqttConnected = false;
 static bool isStarted = false;
 
+static char mqttHostname[32];
+
 static struct tm *tm_now;
 static struct tm *tm_sunset;
 static struct tm *tm_sunrise;
@@ -329,61 +324,50 @@ char *malloc_stringf(const char *format, ...)
     return ret;
 }
 
-void tgSend()
+// Функция для отправки сообщения в Telegram
+static esp_err_t send_telegram_message(const char *message)
 {
-    const char *tag = "tgSend";
+    const char *tag = "send_telegram_message";
+    char url[512];
+    sprintf(url, "https://api.telegram.org/bot%s/sendMessage?chat_id=%s&text=%s", TELEGRAM_BOT_TOKEN, CHAT_ID, message);
 
-    int chat_id = 1090787677;
+    esp_http_client_config_t config = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .cert_pem = (char *)tg_org_pem_start,
+        .port = 443,
+    };
 
-    // Configuring request parameters
-    esp_err_t ret = ESP_FAIL;
-    esp_http_client_config_t cfgHttp;
-    memset(&cfgHttp, 0, sizeof(cfgHttp));
-    cfgHttp.method = HTTP_METHOD_POST;
-    cfgHttp.host = TG_HOST;
-    cfgHttp.port = 443;
-    cfgHttp.path = TG_PATH;
-    cfgHttp.timeout_ms = 60000;
-    cfgHttp.transport_type = HTTP_TRANSPORT_OVER_SSL;
-    cfgHttp.cert_pem = (char *)tg_org_pem_start;
-    cfgHttp.use_global_ca_store = false;
-
-    char *buffer_json = malloc_stringf(API_TELEGRAM_TMPL_MESSAGE, chat_id, "false", "hello", 123);
-
-    // Make request to Telegram API
-    esp_http_client_handle_t client = esp_http_client_init(&cfgHttp);
-    if (client)
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL)
     {
-        esp_http_client_set_header(client, "Content-Type", "application/json");
-        esp_http_client_set_post_field(client, buffer_json, strlen(buffer_json));
-        ret = esp_http_client_perform(client);
-        if (ret == ESP_OK)
-        {
-            int retCode = esp_http_client_get_status_code(client);
-            if (retCode == HttpStatus_Ok)
-            {
-                ret = ESP_OK;
-                ESP_LOGI(tag, "Message sent");
-            }
-            else if (retCode == HttpStatus_Forbidden)
-            {
-                ret = ESP_ERR_INVALID_RESPONSE;
-                ESP_LOGE(tag, "Failed to send message, too many messages, please wait");
-            }
-            else
-            {
-                ret = ESP_ERR_INVALID_ARG;
-                ESP_LOGE(tag, "Failed to send message, API error code: %d!", retCode);
-            };
-
-            esp_http_client_cleanup(client);
-        }
-        else
-        {
-            ret = ESP_ERR_INVALID_STATE;
-            ESP_LOGE(tag, "Failed to complete request to Telegram API!");
-        };
+        ESP_LOGE(tag, "HTTP client init error");
+        return ESP_FAIL;
     }
+
+    esp_err_t err = esp_http_client_perform(client);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(tag, "Send message error: %s", esp_err_to_name(err));
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return err;
+    }
+
+    int status_code = esp_http_client_get_status_code(client);
+    if (status_code != 200)
+    {
+        ESP_LOGE(tag, "Server status code error : %d", status_code);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(tag, "Message send success");
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return ESP_OK;
 }
 
 static float esp_heap_free_percent()
@@ -746,11 +730,8 @@ static void mqtt_start(void)
     char *tag = "mqtt_start";
     esp_err_t err;
     uint8_t mac[6];
-    char *mqttHostname = (char *)calloc(32, sizeof(char));
 
-    mqttTopicControl = (char *)calloc(50, sizeof(char));
     mqttTopicStatus = (char *)calloc(250, sizeof(char));
-    mqttHostname = (char *)calloc(50, sizeof(char));
     mqttTopicCheckOnline = (char *)calloc(50, sizeof(char));
     mqttTopicControl = (char *)calloc(50, sizeof(char));
     mqttTopicStatus = (char *)calloc(50, sizeof(char));
@@ -864,8 +845,6 @@ static void mqtt_start(void)
     {
         ESP_LOGE(tag, "get MAC address error");
     }
-    if (mqttHostname != NULL)
-        vPortFree(mqttHostname);
 }
 
 /* Функция обработчик сообщений MQTT */
@@ -914,8 +893,20 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             mqttSubscribe(event->client, mqttTopicSystemCountry, mqttTopicSystemCountryQoS);
 
             mqttPublish(event->client, mqttTopicCheckOnline, "online", mqttTopicCheckOnlineQoS, mqttTopicCheckOnlineRet);
-            mqttPublish(event->client, mqttTopicStatus, mqttStatusJson(_status), mqttTopicStatusQoS, mqttTopicStatusRet);
-            mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
+
+            char *status = mqttStatusJson(_status);
+            mqttPublish(event->client, mqttTopicStatus, status, mqttTopicStatusQoS, mqttTopicStatusRet);
+            free(status);
+
+            char *system = mqttSystemJson(_system);
+            mqttPublish(event->client, mqttTopicSystem, system, mqttTopicSystemQoS, mqttTopicSystemRet);
+            free(system);
+
+            tgMessage = (char *)malloc(50 * sizeof(char));
+            strcpy(tgMessage, mqttHostname);
+            strcat(tgMessage, "_online");
+            send_telegram_message(tgMessage);
+            free(tgMessage);
         }
         break;
 
@@ -1056,7 +1047,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         ESP_LOGW(tag, "Get system data topic received");
 
                         // Публикуем системный топик
-                        mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
+                        char *str = mqttSystemJson(_system);
+                        mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
+                        free(str);
                     }
 
                     // Запрос на перезагрузку
@@ -1101,7 +1094,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         nvs_write_u16("max_steps", _system.max_steps);
 
                         // Публикуем системный топик
-                        mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
+                        char *str = mqttSystemJson(_system);
+                        mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
+                        free(str);
                     }
                     else
                     {
@@ -1126,7 +1121,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("ow_key", _system.ow_key);
 
                     // Публикуем системный топик
-                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
+                    char *str = mqttSystemJson(_system);
+                    mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
+                    free(str);
                 }
                 else
                 {
@@ -1146,7 +1143,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("tg_key", _system.tg_key);
 
                     // Публикуем системный топик
-                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
+                    char *str = mqttSystemJson(_system);
+                    mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
+                    free(str);
                 }
                 else
                 {
@@ -1203,7 +1202,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         nvs_write_str("update_url", _system.update_url);
 
                         // Публикуем системный топик
-                        mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
+                        char *str = mqttSystemJson(_system);
+                        mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
+                        free(str);
 
                         // Все выключаем
                         xTimerStop(timer1_handle, 0);
@@ -1216,7 +1217,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         ESP_LOGE(tag, "Invalid url");
                         strcpy(_system.update_url, "invalid_url");
                         //  Публикуем системный топик
-                        mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
+                        char *str = mqttSystemJson(_system);
+                        mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
+                        free(str);
                     }
                 }
                 else
@@ -1237,7 +1240,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("server_time1", _system.time_server1);
 
                     // Публикуем системный топик
-                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
+                    char *str = mqttSystemJson(_system);
+                    mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
+                    free(str);
                 }
                 else
                 {
@@ -1257,7 +1262,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("server_time2", _system.time_server2);
 
                     // Публикуем системный топик
-                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
+                    char *str = mqttSystemJson(_system);
+                    mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
+                    free(str);
                 }
                 else
                 {
@@ -1278,7 +1285,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("timezone", _system.timezone);
 
                     // Публикуем системный топик
-                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
+                    char *str = mqttSystemJson(_system);
+                    mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
+                    free(str);
                 }
                 else
                 {
@@ -1299,7 +1308,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("city", _system.city);
 
                     // Публикуем системный топик
-                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
+                    char *str = mqttSystemJson(_system);
+                    mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
+                    free(str);
                 }
                 else
                 {
@@ -1319,7 +1330,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     nvs_write_str("country", _system.country);
 
                     // Публикуем системный топик
-                    mqttPublish(event->client, mqttTopicSystem, mqttSystemJson(_system), mqttTopicSystemQoS, mqttTopicSystemRet);
+                    char *str = mqttSystemJson(_system);
+                    mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
+                    free(str);
                 }
                 else
                 {
@@ -1607,11 +1620,11 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
         cJSON *str = cJSON_Parse(ow_data);
         cJSON *sys = cJSON_GetObjectItemCaseSensitive(str, "sys");
 
-        //Читаем timezone, sunset, sunrise в UNIX формате
+        // Читаем timezone, sunset, sunrise в UNIX формате
         _status.sunrise_time_unix = cJSON_GetObjectItemCaseSensitive(sys, "sunrise")->valueint;
         _status.sunset_time_unix = cJSON_GetObjectItemCaseSensitive(sys, "sunset")->valueint;
 
-        //Переводим из UNIX формата в читаемый
+        // Переводим из UNIX формата в читаемый
         tm_sunrise = localtime(&_status.sunrise_time_unix);
         strftime(_status.sunrise_time, sizeof(_status.sunrise_time), "%H:%M:%S", tm_sunrise);
         ESP_LOGI(tag, "Time sunrise: %s", _status.sunrise_time);
@@ -1991,6 +2004,14 @@ static void move_task(void *param)
         ESP_LOGI(tag, "SM on target: %d", _status.target_pos);
     }
 
+    tgMessage = (char *)malloc(50 * sizeof(char));
+    strcpy(tgMessage, mqttHostname);
+    strcat(tgMessage, "_");
+    strcat(tgMessage, _status.move_status);
+
+    send_telegram_message(tgMessage);
+    free(tgMessage);
+
     if (dir != 0)
     {
         // Сигналы вращения и индикации
@@ -2025,6 +2046,14 @@ static void move_task(void *param)
     char *str = mqttStatusJson(_status);
     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
     free(str);
+
+    tgMessage = (char *)malloc(50 * sizeof(char));
+    strcpy(tgMessage, mqttHostname);
+    strcat(tgMessage, "_");
+    strcat(tgMessage, _status.move_status);
+
+    send_telegram_message(tgMessage);
+    free(tgMessage);
 
     vTaskDelete(NULL);
 }
@@ -2727,7 +2756,7 @@ void app_main(void)
 
     wifi_init();
 
-    xTaskCreate(led_task, "led_task", 2048, NULL, 3, NULL);
+    xTaskCreate(led_task, "led_task", 4096, NULL, 3, NULL);
     xTaskCreate(init_btn_task, "init_btn_task", 2048, NULL, 3, NULL);
     xTaskCreate(openweather_task, "openweather_task", 8000, NULL, 3, NULL);
     xTaskCreate(publish_task, "publish_task", 4096, NULL, 3, NULL);
