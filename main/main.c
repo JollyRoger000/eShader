@@ -115,23 +115,7 @@ static int mqttTopicSystemCityQoS = 0;
 
 static int mqttTopicStatusRet = 0;
 static int mqttTopicCheckOnlineRet = 0;
-static int mqttTopicControlRet = 0;
-static int mqttTopicTimersRet = 0;
-static int mqttTopicAddTimerRet = 0;
-static int mqttTopicAddSunriseRet = 0;
-static int mqttTopicAddSunsetRet = 0;
-static int mqttTopicDelSunriseRet = 0;
-static int mqttTopicDelSunsetRet = 0;
 static int mqttTopicSystemRet = 0;
-static int mqttTopicSystemUpdateRet = 0;
-static int mqttTopicSystemMaxStepsRet = 0;
-static int mqttTopicSystemTGKeyRet = 0;
-static int mqttTopicSystemOWKeyRet = 0;
-static int mqttTopicSystemServerTime1Ret = 0;
-static int mqttTopicSystemServerTime2Ret = 0;
-static int mqttTopicSystemTimeZoneRet = 0;
-static int mqttTopicSystemCountryRet = 0;
-static int mqttTopicSystemCityRet = 0;
 
 typedef struct
 {
@@ -203,7 +187,6 @@ static EventGroupHandle_t event_group = NULL; // Группа событий
 static TaskHandle_t calibrate_task_handle = NULL;
 static TaskHandle_t move_task_handle = NULL;
 static TimerHandle_t timer1_handle = NULL;
-static TimerHandle_t timer2_handle = NULL;
 static esp_mqtt_client_handle_t mqttClient = NULL;
 static wifi_config_t wifi_config; // Структура для хранения настроек WIFI
 
@@ -216,10 +199,6 @@ static size_t ow_len = 0;
 
 static uint16_t calibrateCnt = 0;
 
-static char *moveStatus = "stopped";
-static bool sw_flag = false;
-static bool init_flag = false;
-static bool targetFlag = false;
 static bool ssid_loaded = false;
 static bool password_loaded = false;
 static bool time_sync = false;
