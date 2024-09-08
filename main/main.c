@@ -21,6 +21,7 @@
 #include <rom/ets_sys.h>
 #include "esp_tls.h"
 #include <esp_http_server.h>
+#include "config.h"
 
 #define SM_DIR 19
 #define SM_STEP 17
@@ -41,19 +42,8 @@ extern const uint8_t tg_org_pem_end[] asm("_binary_api_telegram_org_pem_end");
 extern const uint8_t ss_pem_start[] asm("_binary_sunrise_sunset_org_pem_start");
 extern const uint8_t ss_pem_end[] asm("_binary_sunrise_sunset_org_pem_end");
 
-#define TELEGRAM_BOT_TOKEN "7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM"
-#define CHAT_ID "1090787677"
-
 #define DEFAULT_MAX_TIME_SYNC_WAITING 10
 #define DEFAULT_MAX_STEPS 30000
-#define DEFAULT_OW_KEY "19fcdfb788eed5e53824116dc41ebe90"
-#define DEFAULT_TG_KEY "7001862513:AAEIJGOuRcs1qcXSK41S6RDdmtRsqbKh7TM"
-#define DEFAULT_UPDATE_URL "https://cs49635.tw1.ru/eShader/updates/eShader.bin"
-#define DEFAULT_COUNTRY "RU"
-#define DEFAULT_CITY "Moscow"
-#define DEFAULT_TZ "MSK-3"
-#define DEFAULT_TIME_SERVER1 "pool.ntp.org"
-#define DEFAULT_TIME_SERVER2 "time.nist.gov"
 
 #define WIFI_START_BIT BIT0     // Бит запуска подключения к WiFi
 #define WIFI_DONE_BIT BIT1      // Бит успешного подключения к WiFi
@@ -70,17 +60,17 @@ extern const uint8_t ss_pem_end[] asm("_binary_sunrise_sunset_org_pem_end");
 #define OTA_CONNECT_BIT BIT12   // Бит подключения к серверу
 #define OTA_FINISH_BIT BIT13    // Бит завершения обновления
 
-const int mqttPort = 15476;
-const int mqttTlsPort = 15477;
-const char *mqttServer = "mqtt://m9.wqtt.ru";
-const char *mqttsServer = "mqtts://m9.wqtt.ru";
-const char *mqttUser = "u_3MLZE1";
-const char *mqttPass = "78C0pl7e";
+const int mqttPort = WQTT_PORT;
+const int mqttTlsPort = WQTT_TLS_PORT;
+const char *mqttServer = WQTT_SERVER;
+const char *mqttsServer = WQTT_TLS_SERVER;
+const char *mqttUser = WQTT_USER;
+const char *mqttPass = WQTT_PASSWORD;
 
-// const int mqttPort = 1883;
-// const char *mqttServer = "mqtt://192.168.68.68";
-// const char *mqttUser = "";
-// const char *mqttPass = "";
+// const int mqttPort = LOCAL_MOSQUITTO_PORT;
+// const char *mqttServer = LOCAL_MOSQUITTO_SERVER
+// const char *mqttUser = LOCAL_MOSQUITTO_USER;
+// const char *mqttPass = LOCAL_MOSQUITTO_PASSWORD;
 
 static char *mqttTopicCheckOnline = NULL;
 static char *mqttTopicControl = NULL;
@@ -198,14 +188,14 @@ typedef struct
 
 static SystemStruct _system = {
     .max_steps = DEFAULT_MAX_STEPS,
-    .ow_key = DEFAULT_OW_KEY,
-    .city = DEFAULT_CITY,
-    .country = DEFAULT_COUNTRY,
-    .tg_key = DEFAULT_TG_KEY,
-    .update_url = DEFAULT_UPDATE_URL,
-    .timezone = DEFAULT_TZ,
-    .time_server1 = DEFAULT_TIME_SERVER1,
-    .time_server2 = DEFAULT_TIME_SERVER2,
+    .ow_key = OPEN_WEATHER_MAP_TOKEN,
+    .city = CITY,
+    .country = COUNTRY,
+    .tg_key = TELEGRAM_BOT_TOKEN,
+    .update_url = UPDATE_URL,
+    .timezone = TZ,
+    .time_server1 = TIME_SERVER1,
+    .time_server2 = TIME_SERVER2,
     .last_updated = "no_updated",
 };
 
@@ -291,45 +281,12 @@ char *malloc_string(const char *source)
     return NULL;
 }
 
-char *malloc_stringf(const char *format, ...)
-{
-    const char *tag = "malloc_stringf";
-    char *ret = NULL;
-    if (format != NULL)
-    {
-        // get the list of arguments
-        va_list args1, args2;
-        va_start(args1, format);
-        va_copy(args2, args1);
-        // calculate length of resulting string
-        int len = vsnprintf(NULL, 0, format, args1);
-        va_end(args1);
-        // allocate memory for string
-        if (len > 0)
-        {
-            ret = (char *)malloc(len + 1);
-
-            if (ret != NULL)
-            {
-                memset(ret, 0, len + 1);
-                vsnprintf(ret, len + 1, format, args2);
-            }
-            else
-            {
-                ESP_LOGE(tag, "Failed to format string: out of memory!");
-            };
-        };
-        va_end(args2);
-    };
-    return ret;
-}
-
 // Функция для отправки сообщения в Telegram
 static esp_err_t send_telegram_message(const char *message)
 {
     const char *tag = "send_telegram_message";
     char url[512];
-    sprintf(url, "https://api.telegram.org/bot%s/sendMessage?chat_id=%s&text=%s", TELEGRAM_BOT_TOKEN, CHAT_ID, message);
+    sprintf(url, "https://api.telegram.org/bot%s/sendMessage?chat_id=%s&text=%s", TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message);
 
     esp_http_client_config_t config = {
         .url = url,
@@ -1184,7 +1141,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         }
                         else
                         {
-                            strcpy(_system.update_url, DEFAULT_UPDATE_URL);
+                            strcpy(_system.update_url, UPDATE_URL);
                             ESP_LOGW(tag, "Last update url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.update_url);
                         }
                         nvs_close(nvs_handle);
@@ -1677,26 +1634,6 @@ static void openweather_task(void *param)
                 .url = url,
                 .method = HTTP_METHOD_GET,
                 .event_handler = http_event_handler,
-                // Указатели на сертификат
-                ///.cert_pem = (char *)ss_pem_start,
-                //.cert_len = ss_pem_end - ss_pem_start,
-                //.cert_pem = (char *)owmap_org_pem_start,
-                //.cert_len = owmap_org_pem_end - owmap_org_pem_start,
-                // Включаем транспорт через SSL
-                //.transport_type = HTTP_TRANSPORT_OVER_SSL,
-                // Отключаем глобальное хранилище сертификатов
-                //.use_global_ca_store = false,
-                //.crt_bundle_attach = NULL,
-                //.crt_bundle_attach = esp_crt_bundle_attach,
-                // Закрыть соединение после отправки всех данных
-                //.keep_alive_enable = false,
-                // Блокировка задачи на время выполнения
-                //.is_async = false,
-                // Таймаут передачи
-                //.timeout_ms = 60000,
-                // Разрешить автоматическую переадресацию без ограничений
-                //.disable_auto_redirect = false,
-                //.max_redirection_count = 0,
             };
             ESP_LOGI(tag, "Task started from url: %s", config.url);
 
@@ -2598,7 +2535,7 @@ void app_main(void)
         }
         else
         {
-            strcpy(_system.ow_key, DEFAULT_OW_KEY);
+            strcpy(_system.ow_key, OPEN_WEATHER_MAP_TOKEN);
             ESP_LOGW(tag, "Openweather api key reading error (%s). Set default key: %s", esp_err_to_name(err), _system.ow_key);
         }
         // Читаем Telegram api key
@@ -2612,7 +2549,7 @@ void app_main(void)
         }
         else
         {
-            strcpy(_system.tg_key, DEFAULT_TG_KEY);
+            strcpy(_system.tg_key, TELEGRAM_BOT_TOKEN);
             ESP_LOGW(tag, "Telegram api key reading error (%s). Set default key: %s", esp_err_to_name(err), _system.tg_key);
         }
         // Читаем url сервера 1 синхронизации времени
@@ -2626,7 +2563,7 @@ void app_main(void)
         }
         else
         {
-            strcpy(_system.time_server1, DEFAULT_TIME_SERVER1);
+            strcpy(_system.time_server1, TIME_SERVER1);
             ESP_LOGW(tag, "Time server 1 url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.time_server1);
         }
         // Читаем url сервера 2 синхронизации времени
@@ -2640,7 +2577,7 @@ void app_main(void)
         }
         else
         {
-            strcpy(_system.time_server2, DEFAULT_TIME_SERVER2);
+            strcpy(_system.time_server2, TIME_SERVER2);
             ESP_LOGW(tag, "Time server 2 url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.time_server2);
         }
         // Читаем timezone
@@ -2654,7 +2591,7 @@ void app_main(void)
         }
         else
         {
-            strcpy(_system.timezone, DEFAULT_TZ);
+            strcpy(_system.timezone, TZ);
             ESP_LOGW(tag, "Timezone reading error (%s). Set default tz: %s", esp_err_to_name(err), _system.timezone);
         }
         // Читаем код страны
@@ -2668,7 +2605,7 @@ void app_main(void)
         }
         else
         {
-            strcpy(_system.country, DEFAULT_COUNTRY);
+            strcpy(_system.country, COUNTRY);
             ESP_LOGW(tag, "Country code reading error (%s). Set default country: %s", esp_err_to_name(err), _system.country);
         }
         // Читаем код города
@@ -2682,7 +2619,7 @@ void app_main(void)
         }
         else
         {
-            strcpy(_system.city, DEFAULT_CITY);
+            strcpy(_system.city, CITY);
             ESP_LOGW(tag, "City code reading error (%s). Set default city: %s", esp_err_to_name(err), _system.city);
         }
         // Читаем время последнего обновления системы
@@ -2710,7 +2647,7 @@ void app_main(void)
         }
         else
         {
-            strcpy(_system.update_url, DEFAULT_UPDATE_URL);
+            strcpy(_system.update_url, UPDATE_URL);
             ESP_LOGW(tag, "Last update url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.update_url);
         }
 
@@ -2724,35 +2661,6 @@ void app_main(void)
         _status.on_sunrise = 0;
         _status.on_sunset = 0;
     }
-
-    /*
-    char ssid[32] = "mywifi";
-    char pass[64] = "mypass123";
-    memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
-    memcpy(wifi_config.sta.password, pass, sizeof(wifi_config.sta.ssid));
-    memcpy(_system.ssid, ssid, sizeof(_system.ssid));
-    memcpy(_system.password, pass, sizeof(_system.password));
-    password_loaded = true;
-    ssid_loaded = true;
-    */
-
-    // char ssid[32] = "YA31";
-    // char pass[32] = "audia3o765km190rus";
-    // memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
-    // memcpy(wifi_config.sta.password, pass, sizeof(wifi_config.sta.ssid));
-    // memcpy(_system.ssid, ssid, sizeof(_system.ssid));
-    // memcpy(_system.password, pass, sizeof(_system.password));
-    // password_loaded = true;
-    // ssid_loaded = true;
-
-    // char ssid[32] = "vivo Y35";
-    // char pass[64] = "audia3o765km190rus";
-    // memcpy(wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
-    // memcpy(wifi_config.sta.password, pass, sizeof(wifi_config.sta.ssid));
-    // memcpy(_system.ssid, ssid, sizeof(_system.ssid));
-    // memcpy(_system.password, pass, sizeof(_system.password));
-    // password_loaded = true;
-    // ssid_loaded = true;
 
     wifi_init();
 
