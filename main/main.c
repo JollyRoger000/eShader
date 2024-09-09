@@ -21,6 +21,8 @@
 #include <rom/ets_sys.h>
 #include "esp_tls.h"
 #include <esp_http_server.h>
+#include "esp_spiffs.h"
+
 #include "config.h"
 
 #define SM_DIR 19
@@ -67,10 +69,10 @@ const char *mqttsServer = WQTT_TLS_SERVER;
 const char *mqttUser = WQTT_USER;
 const char *mqttPass = WQTT_PASSWORD;
 
-// const int mqttPort = LOCAL_MOSQUITTO_PORT;
-// const char *mqttServer = LOCAL_MOSQUITTO_SERVER
-// const char *mqttUser = LOCAL_MOSQUITTO_USER;
-// const char *mqttPass = LOCAL_MOSQUITTO_PASSWORD;
+const int mqttReservePort = LOCAL_MOSQUITTO_PORT;
+const char *mqttReserveServer = LOCAL_MOSQUITTO_SERVER;
+const char *mqttReserveUser = LOCAL_MOSQUITTO_USER;
+const char *mqttReservePass = LOCAL_MOSQUITTO_PASSWORD;
 
 static char *mqttTopicCheckOnline = NULL;
 static char *mqttTopicControl = NULL;
@@ -239,6 +241,86 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t eve
 static void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void ota_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
+static httpd_handle_t server_setup(void);
+static void init_web_page_buffer(void);
+
+#define INDEX_HTML_PATH "/spiffs/index.html"
+    char index_html[4096];
+char response_data[4096];
+
+static void init_web_page_buffer(void)
+{
+    const char *tag = "init_web_page_buffer";
+
+    esp_vfs_spiffs_conf_t conf = {
+        .base_path = "/spiffs",
+        .partition_label = NULL,
+        .max_files = 5,
+        .format_if_mount_failed = true};
+
+    ESP_ERROR_CHECK(esp_vfs_spiffs_register(&conf));
+
+    memset((void *)index_html, 0, sizeof(index_html));
+    struct stat st;
+    if (stat(INDEX_HTML_PATH, &st))
+    {
+        ESP_LOGE(tag, "index.html is not found");
+        return;
+    }
+
+    FILE *fp = fopen(INDEX_HTML_PATH, "r");
+    if (fread(index_html, st.st_size, 1, fp) == 0)
+    {
+        ESP_LOGE(tag, "file read failed");
+    }
+    fclose(fp);
+}
+
+esp_err_t send_web_page(httpd_req_t *req)
+{
+    const char *tag = "send_web_page";
+    int response = httpd_resp_send(req, response_data, HTTPD_RESP_USE_STRLEN);
+    ESP_LOGI(tag, "Response: %d", response);
+    return response;
+}
+
+char off_resp[] = "<!DOCTYPE html><html><head><style type=\"text/css\">html {  font-family: Arial;  display: inline-block;  margin: 0px auto;  text-align: center;}h1{  color: #070812;  padding: 2vh;}.button {  display: inline-block;  background-color: #b30000; //red color  border: none;  border-radius: 4px;  color: white;  padding: 16px 40px;  text-decoration: none;  font-size: 30px;  margin: 2px;  cursor: pointer;}.button2 {  background-color: #364cf4; //blue color}.content {   padding: 50px;}.card-grid {  max-width: 800px;  margin: 0 auto;  display: grid;  grid-gap: 2rem;  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));}.card {  background-color: white;  box-shadow: 2px 2px 12px 1px rgba(140,140,140,.5);}.card-title {  font-size: 1.2rem;  font-weight: bold;  color: #034078}</style>  <title>ESP32 WEB SERVER</title>  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">  <link rel=\"icon\" href=\"data:,\">  <link rel=\"stylesheet\" href=\"https://use.fontawesome.com/releases/v5.7.2/css/all.css\"    integrity=\"sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr\" crossorigin=\"anonymous\">  <link rel=\"stylesheet\" type=\"text/css\"></head><body>  <h2>ESP32 WEB SERVER</h2>  <div class=\"content\">    <div class=\"card-grid\">      <div class=\"card\">        <p><i class=\"fas fa-lightbulb fa-2x\" style=\"color:#c81919;\"></i>     <strong>GPIO2</strong></p>        <p>GPIO state: <strong> OFF</strong></p>        <p>          <a href=\"/led2on\"><button class=\"button\">ON</button></a>          <a href=\"/led2off\"><button class=\"button button2\">OFF</button></a>        </p>      </div>    </div>  </div></body></html>";
+// esp_err_t send_web_page(httpd_req_t * req)
+// {
+//     int response = httpd_resp_send(req, off_resp, HTTPD_RESP_USE_STRLEN);
+//     return response;
+// }
+
+esp_err_t get_req_handler(httpd_req_t *req)
+{
+    return send_web_page(req);
+}
+
+httpd_uri_t uri_get = {
+    .uri = "/",
+    .method = HTTP_GET,
+    .handler = get_req_handler,
+    .user_ctx = NULL};
+
+httpd_handle_t server_setup(void)
+{
+    const char *tag = "local server setup...";
+
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    httpd_handle_t server = NULL;
+
+    if (httpd_start(&server, &config) == ESP_OK)
+    {
+        httpd_register_uri_handler(server, &uri_get);
+        ESP_LOGI(tag, "Server started");
+    }
+    else
+    {
+        ESP_LOGE(tag, "Failed to start server");
+    }
+
+    return server;
+}
 
 char *malloc_string(const char *source)
 {
@@ -842,7 +924,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             strcpy(tgMessage, mqttHostname);
             strcat(tgMessage, "_online");
             send_telegram_message(tgMessage);
-            free(tgMessage);
+            //                free(tgMessage);
         }
         break;
 
@@ -1926,7 +2008,7 @@ static void move_task(void *param)
     strcat(tgMessage, _status.move_status);
 
     send_telegram_message(tgMessage);
-    free(tgMessage);
+    // free(tgMessage);
 
     if (dir != 0)
     {
@@ -1969,7 +2051,7 @@ static void move_task(void *param)
     strcat(tgMessage, _status.move_status);
 
     send_telegram_message(tgMessage);
-    free(tgMessage);
+    // free(tgMessage);
 
     vTaskDelete(NULL);
 }
@@ -2132,106 +2214,32 @@ static void init_btn_task(void *param)
 static void wifi_init(void)
 {
     char *tag = "wifi_init";
-    esp_err_t err;
-
     ESP_LOGI(tag, "wifi initializating...");
 
     event_group = xEventGroupCreate(); // Создаем группу событий
+
     // Инициализируем стек протоколов TCP/IP lwIP (Lightweight IP)
-    err = esp_netif_init();
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(tag, "lwIP stack initialized");
-    }
-    else
-    {
-        ESP_LOGE(tag, "lwIP stack initialization error: %s", esp_err_to_name(err));
-    }
+    ESP_ERROR_CHECK(esp_netif_init());
+
     // Создаем системный цикл событий
-    err = esp_event_loop_create_default();
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(tag, "system event loop created");
-    }
-    else
-    {
-        ESP_LOGE(tag, "system event loop creation error: %s", esp_err_to_name(err));
-    }
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     esp_netif_create_default_wifi_sta();
 
     /* Инициализируем WiFi значениями по умолчанию */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    err = esp_wifi_init(&cfg);
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(tag, "WiFi initialized");
-    }
-    else
-    {
-        ESP_LOGE(tag, "WiFi initialization error: %s", esp_err_to_name(err));
-    }
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
     /* Регистрируем события в функции обработчике */
-    err = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL);
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(tag, "WiFi event handler registered");
-    }
-    else
-    {
-        ESP_LOGE(tag, "WiFi event handler registration error: %s", esp_err_to_name(err));
-    }
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, &ip_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &sc_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(ESP_HTTPS_OTA_EVENT, ESP_EVENT_ANY_ID, &ota_event_handler, NULL));
 
-    err = esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, &ip_event_handler, NULL);
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(tag, "IP event handler registered");
-    }
-    else
-    {
-        ESP_LOGE(tag, "IP event handler registration error: %s", esp_err_to_name(err));
-    }
-
-    err = esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &sc_event_handler, NULL);
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(tag, "SC event handler registered");
-    }
-    else
-    {
-        ESP_LOGE(tag, "SC event handler registration error: %s", esp_err_to_name(err));
-    }
-
-    err = esp_event_handler_register(ESP_HTTPS_OTA_EVENT, ESP_EVENT_ANY_ID, &ota_event_handler, NULL);
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(tag, "OTA event handler registered");
-    }
-    else
-    {
-        ESP_LOGE(tag, "OTA event handler registration error: %s", esp_err_to_name(err));
-    }
     esp_wifi_set_ps(WIFI_PS_NONE);
     // Переводим ESP в режим STA и запускаем WiFi
-    err = esp_wifi_set_mode(WIFI_MODE_STA);
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(tag, "WiFi mode set to STA");
-    }
-    else
-    {
-        ESP_LOGE(tag, "WiFi mode set to STA error: %s", esp_err_to_name(err));
-    }
-    err = esp_wifi_start();
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(tag, "WiFi started");
-    }
-    else
-    {
-        ESP_LOGE(tag, "WiFi start error: %s", esp_err_to_name(err));
-    }
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
 }
 
 /* Обработчик событий программного таймера c периодоим 1 секунда */
@@ -2290,35 +2298,9 @@ static void timer1_cb(TimerHandle_t pxTimer)
         wating_to_time_sync++;
         if (wating_to_time_sync == DEFAULT_MAX_TIME_SYNC_WAITING)
         {
-            esp_restart();
+        //    esp_restart();
         }
     }
-}
-
-static httpd_handle_t start_webserver(void)
-{
-    const char *tag = "start_webserver";
-    httpd_handle_t server = NULL;
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-
-    config.lru_purge_enable = true;
-
-    // Start the httpd server
-    ESP_LOGI(tag, "Starting server on port: '%d'", config.server_port);
-    if (httpd_start(&server, &config) == ESP_OK)
-    {
-        // Set URI handlers
-        ESP_LOGI(tag, "Registering URI handlers");
-        // httpd_register_uri_handler(server, &hello);
-        // httpd_register_uri_handler(server, &echo);
-        // httpd_register_uri_handler(server, &ctrl);
-        // httpd_register_uri_handler(server, &any);
-
-        return server;
-    }
-
-    ESP_LOGI(tag, "Error starting server!");
-    return NULL;
 }
 
 void app_main(void)
@@ -2661,4 +2643,8 @@ void app_main(void)
     {
         ESP_LOGI(tag, "timer 1 started...");
     }
+
+    // Запускаем локальный веб сервер
+    init_web_page_buffer();
+    server_setup();
 }
