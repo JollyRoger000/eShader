@@ -242,13 +242,13 @@ static void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t eve
 static void ota_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
 static httpd_handle_t server_setup(void);
-static void init_web_page_buffer(void);
 
 #define INDEX_HTML_PATH "/spiffs/index.html"
-    char index_html[4096];
+char index_html[4096];
 char response_data[4096];
 
-static void init_web_page_buffer(void)
+// Функция инициализации spiffs
+static void init_spiffs(void)
 {
     const char *tag = "init_web_page_buffer";
 
@@ -258,7 +258,38 @@ static void init_web_page_buffer(void)
         .max_files = 5,
         .format_if_mount_failed = true};
 
-    ESP_ERROR_CHECK(esp_vfs_spiffs_register(&conf));
+    esp_err_t ret = esp_vfs_spiffs_register(&conf);
+    if (ret != ESP_OK)
+    {
+        if (ret == ESP_FAIL)
+        {
+            ESP_LOGE(tag, "Failed to mount or format filesystem");
+        }
+        else if (ret == ESP_ERR_NOT_FOUND)
+        {
+            ESP_LOGE(tag, "Failed to find SPIFFS partition");
+        }
+        else
+        {
+            ESP_LOGE(tag, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
+        }
+        return;
+    }
+
+    size_t total = 0, used = 0;
+    ret = esp_spiffs_info(conf.partition_label, &total, &used);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(tag, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(ret));
+    }
+    else
+    {
+        ESP_LOGI(tag, "Partition size: total: %d, used: %d", total, used);
+    }
+}
+static void read_index_html()
+{
+    const char *tag = "read_index_html";
 
     memset((void *)index_html, 0, sizeof(index_html));
     struct stat st;
@@ -273,23 +304,21 @@ static void init_web_page_buffer(void)
     {
         ESP_LOGE(tag, "file read failed");
     }
+    else
+    {
+        ESP_LOGI(tag, "index.html read success");
+    }
     fclose(fp);
 }
 
 esp_err_t send_web_page(httpd_req_t *req)
 {
     const char *tag = "send_web_page";
+    sprintf(response_data, index_html);
     int response = httpd_resp_send(req, response_data, HTTPD_RESP_USE_STRLEN);
     ESP_LOGI(tag, "Response: %d", response);
     return response;
 }
-
-char off_resp[] = "<!DOCTYPE html><html><head><style type=\"text/css\">html {  font-family: Arial;  display: inline-block;  margin: 0px auto;  text-align: center;}h1{  color: #070812;  padding: 2vh;}.button {  display: inline-block;  background-color: #b30000; //red color  border: none;  border-radius: 4px;  color: white;  padding: 16px 40px;  text-decoration: none;  font-size: 30px;  margin: 2px;  cursor: pointer;}.button2 {  background-color: #364cf4; //blue color}.content {   padding: 50px;}.card-grid {  max-width: 800px;  margin: 0 auto;  display: grid;  grid-gap: 2rem;  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));}.card {  background-color: white;  box-shadow: 2px 2px 12px 1px rgba(140,140,140,.5);}.card-title {  font-size: 1.2rem;  font-weight: bold;  color: #034078}</style>  <title>ESP32 WEB SERVER</title>  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">  <link rel=\"icon\" href=\"data:,\">  <link rel=\"stylesheet\" href=\"https://use.fontawesome.com/releases/v5.7.2/css/all.css\"    integrity=\"sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr\" crossorigin=\"anonymous\">  <link rel=\"stylesheet\" type=\"text/css\"></head><body>  <h2>ESP32 WEB SERVER</h2>  <div class=\"content\">    <div class=\"card-grid\">      <div class=\"card\">        <p><i class=\"fas fa-lightbulb fa-2x\" style=\"color:#c81919;\"></i>     <strong>GPIO2</strong></p>        <p>GPIO state: <strong> OFF</strong></p>        <p>          <a href=\"/led2on\"><button class=\"button\">ON</button></a>          <a href=\"/led2off\"><button class=\"button button2\">OFF</button></a>        </p>      </div>    </div>  </div></body></html>";
-// esp_err_t send_web_page(httpd_req_t * req)
-// {
-//     int response = httpd_resp_send(req, off_resp, HTTPD_RESP_USE_STRLEN);
-//     return response;
-// }
 
 esp_err_t get_req_handler(httpd_req_t *req)
 {
@@ -2298,7 +2327,7 @@ static void timer1_cb(TimerHandle_t pxTimer)
         wating_to_time_sync++;
         if (wating_to_time_sync == DEFAULT_MAX_TIME_SYNC_WAITING)
         {
-        //    esp_restart();
+            //    esp_restart();
         }
     }
 }
@@ -2645,6 +2674,7 @@ void app_main(void)
     }
 
     // Запускаем локальный веб сервер
-    init_web_page_buffer();
+    init_spiffs();
+    read_index_html();
     server_setup();
 }
