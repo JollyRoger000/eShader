@@ -242,9 +242,10 @@ static void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t eve
 static void ota_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
 static httpd_handle_t server_setup(void);
+esp_err_t wifi_sta_do_disconnect(void);
 
 #define INDEX_HTML_PATH "/spiffs/index.html"
-char index_html[4096];
+    char index_html[4096];
 char response_data[4096];
 
 // Функция инициализации spiffs
@@ -1944,26 +1945,6 @@ static void wifi_connect_task(void *param)
     EventBits_t uxBits;
     const char *tag = "wifi_connect_task";
 
-    /* Конфигурируем esp данными структуры wifi_config и подключаемся к AP (формируется сообщение WIFI_EVENT_STA_START)*/
-    err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(tag, "WiFi config set");
-    }
-    else
-    {
-        ESP_LOGE(tag, "WiFi config set error: %s", esp_err_to_name(err));
-    }
-    err = esp_wifi_connect();
-    if (err == ESP_OK)
-    {
-        ESP_LOGI(tag, "WiFi connect");
-    }
-    else
-    {
-        ESP_LOGE(tag, "WiFi connect error: %s", esp_err_to_name(err));
-    }
-
     while (1)
     {
         /* Ждем пока не установятся биты WIFI_CONNECTED_BIT или WIFI_FAIL_BIT
@@ -2239,19 +2220,64 @@ static void init_btn_task(void *param)
     vTaskDelete(NULL);
 }
 
+static void handler_on_wifi_disconnect(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    const char *tag = "handler_on_wifi_disconnect";
+    connect_retry++;
+    if (connect_retry > 10)
+    {
+        ESP_LOGI(tag, "WiFi Connect failed %d times, stop reconnect.", connect_retry);
+
+        wifi_sta_do_disconnect();
+        return;
+    }
+    ESP_LOGI(tag, "Wi-Fi disconnected, trying to reconnect...");
+    esp_err_t err = esp_wifi_connect();
+    if (err == ESP_ERR_WIFI_NOT_STARTED)
+    {
+        return;
+    }
+    ESP_ERROR_CHECK(err);
+}
+
+static void handler_on_wifi_connect(void *esp_netif, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    ESP_LOGI("handler_on_wifi_connect", "Connected to AP");
+    if (ssid_loaded && password_loaded)
+    {
+        xTaskCreate(wifi_connect_task, "wifi_connect_task", 4096, NULL, 1, NULL);
+        xEventGroupSetBits(event_group, WIFI_START_BIT);
+    }
+    else
+    {
+        xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 1, NULL);
+        xEventGroupSetBits(event_group, SC_START_BIT);
+    }
+}
+
+static void handler_on_sta_got_ip(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    const char *tag = "handler_on_sta_got_ip";
+    connect_retry = 0;
+    ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+
+    ESP_LOGI(tag, "Got IPv4 event: Interface \"%s\" address: " IPSTR, esp_netif_get_desc(event->esp_netif), IP2STR(&event->ip_info.ip));
+}
+
+esp_err_t wifi_sta_do_disconnect(void)
+{
+    ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &handler_on_wifi_disconnect));
+    ESP_ERROR_CHECK(esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &handler_on_sta_got_ip));
+    ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &handler_on_wifi_connect));
+
+    return esp_wifi_disconnect();
+}
+
 /* Функция инциализации WiFi*/
 static void wifi_init(void)
 {
     char *tag = "wifi_init";
     ESP_LOGI(tag, "wifi initializating...");
-
-    event_group = xEventGroupCreate(); // Создаем группу событий
-
-    // Инициализируем стек протоколов TCP/IP lwIP (Lightweight IP)
-    ESP_ERROR_CHECK(esp_netif_init());
-
-    // Создаем системный цикл событий
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     esp_netif_create_default_wifi_sta();
 
@@ -2260,15 +2286,19 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
     /* Регистрируем события в функции обработчике */
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, &ip_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &sc_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(ESP_HTTPS_OTA_EVENT, ESP_EVENT_ANY_ID, &ota_event_handler, NULL));
+    //  ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    //  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, &ip_event_handler, NULL));
 
-    esp_wifi_set_ps(WIFI_PS_NONE);
+    connect_retry = 0;
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &handler_on_wifi_disconnect, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &handler_on_sta_got_ip, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &handler_on_wifi_connect, NULL));
+
     // Переводим ESP в режим STA и запускаем WiFi
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_connect());
 }
 
 /* Обработчик событий программного таймера c периодоим 1 секунда */
@@ -2335,6 +2365,15 @@ static void timer1_cb(TimerHandle_t pxTimer)
 void app_main(void)
 {
     char *tag = "main";
+
+    event_group = xEventGroupCreate(); // Создаем группу событий
+    // Инициализируем стек протоколов TCP/IP lwIP (Lightweight IP)
+    ESP_ERROR_CHECK(esp_netif_init());
+    // Создаем системный цикл событий
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    ESP_ERROR_CHECK(esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &sc_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(ESP_HTTPS_OTA_EVENT, ESP_EVENT_ANY_ID, &ota_event_handler, NULL));
 
     // Инициализация сигналов управления мотором и светодиодом на выход
     gpio_set_direction(SM_DIR, GPIO_MODE_OUTPUT);
