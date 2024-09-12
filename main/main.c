@@ -224,7 +224,6 @@ static void move_task(void *param);
 static void calibrate_task(void *param);
 static void smartconfig_task(void *param);
 static void openweather_task(void *param);
-static void wifi_connect_task(void *param);
 static void publish_task(void *params);
 static void ota_task(void *param);
 static void led_task(void *param);
@@ -1431,87 +1430,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     }
 }
 
-// Функция обработчик событий WiFi
-static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
-{
-    const char *tag = "wifi_event_handler";
-    esp_err_t err;
-
-    if (event_base == WIFI_EVENT)
-    {
-        switch (event_id)
-        {
-        /* Режим работы STA */
-        case WIFI_EVENT_STA_START:
-            ESP_LOGI(tag, "WIFI_EVENT_STA_START handle");
-
-            /* Если ssid и pass прорчитаны из NVS запускаем задачу подключения к сети
-             * в противном случае запускаем задачу конфигурации с помощью smart config */
-            if (ssid_loaded && password_loaded)
-            {
-                xTaskCreate(wifi_connect_task, "wifi_connect_task", 4096, NULL, 1, NULL);
-                xEventGroupSetBits(event_group, WIFI_START_BIT);
-            }
-            else
-            {
-                xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 1, NULL);
-                xEventGroupSetBits(event_group, SC_START_BIT);
-            }
-            break;
-
-        /* Соединение прервано */
-        case WIFI_EVENT_STA_DISCONNECTED:
-            ESP_LOGI(tag, "WIFI_EVENT_STA_DISCONNECTED handle");
-            ESP_LOGE(tag, "Connect to the AP fail");
-
-            if (connect_retry < max_connect_retry)
-            {
-                ESP_LOGI(tag, "Retry to connect to the AP");
-                err = esp_wifi_connect();
-                if (err == ESP_OK)
-                {
-                    ESP_LOGI(tag, "esp_wifi_connect success");
-                }
-                {
-                    ESP_LOGE(tag, "Failed to esp_wifi_connect, %d", err);
-                }
-                connect_retry++;
-            }
-            else
-            {
-                xEventGroupSetBits(event_group, WIFI_FAIL_BIT);
-            }
-            break;
-        default:
-            break;
-        }
-    }
-}
-
-// Функция обработчик событий IP
-static void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
-{
-    const char *tag = "ip_event_handler";
-
-    if (event_base == IP_EVENT)
-    {
-        switch (event_id)
-        {
-        /* Если подключение успешно и получен IP адрес*/
-        case IP_EVENT_STA_GOT_IP:
-            ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-            ESP_LOGI(tag, "Connection success. IP addr: " IPSTR, IP2STR(&event->ip_info.ip));
-            connect_retry = 0;
-            xEventGroupSetBits(event_group, WIFI_DONE_BIT);
-            xEventGroupClearBits(event_group, WIFI_START_BIT);
-            break;
-
-        default:
-            break;
-        }
-    }
-}
-
 // Функция обработчик событий smartconfig
 static void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
@@ -1579,8 +1497,6 @@ static void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t eve
                 ESP_LOGE(tag, "WiFi disconnect error: %s", esp_err_to_name(err));
             }
 
-            xTaskCreate(wifi_connect_task, "wifi_connect_task", 4096, NULL, 1, NULL);
-            xEventGroupSetBits(event_group, WIFI_START_BIT);
             xEventGroupClearBits(event_group, SC_START_BIT);
             xEventGroupClearBits(event_group, SC_FOUND_BIT);
             break;
@@ -1795,11 +1711,11 @@ static void smartconfig_task(void *param)
         uxBits = xEventGroupWaitBits(event_group, WIFI_DONE_BIT | SC_DONE_BIT, true, false, portMAX_DELAY);
         if (uxBits & WIFI_DONE_BIT)
         {
-            ESP_LOGI("smartconfig_task", "WiFi Connected to ap");
+            ESP_LOGI(tag, "WiFi Connected to ap");
         }
         if (uxBits & SC_DONE_BIT)
         {
-            ESP_LOGI("smartconfig_task", "Smartconfig is done");
+            ESP_LOGI(tag, "Smartconfig is done");
             err = esp_smartconfig_stop();
             if (err == ESP_OK)
             {
@@ -1935,34 +1851,6 @@ static void ota_task(void *param)
 ota_end:
     esp_https_ota_abort(https_ota_handle);
     ESP_LOGE(tag, "ESP_HTTPS_OTA upgrade failed");
-    vTaskDelete(NULL);
-}
-
-/* Задача подключения к WiFi */
-static void wifi_connect_task(void *param)
-{
-    esp_err_t err;
-    EventBits_t uxBits;
-    const char *tag = "wifi_connect_task";
-
-    while (1)
-    {
-        /* Ждем пока не установятся биты WIFI_CONNECTED_BIT или WIFI_FAIL_BIT
-         * WIFI_FAIL_BIT устанавливается при повторении ошибки подключения заданное количество раз */
-        uxBits = xEventGroupWaitBits(event_group, WIFI_DONE_BIT | WIFI_FAIL_BIT, true, false, portMAX_DELAY);
-        if (uxBits & WIFI_DONE_BIT)
-        {
-            ESP_LOGI("wifi_connect_task", "Connected to ap SSID: %s password: %s", wifi_config.sta.ssid, wifi_config.sta.password);
-
-            // Запускаем синхронизацию времени
-            time_sync_start("MSK-3");
-        }
-        else if (uxBits & WIFI_FAIL_BIT)
-        {
-            ESP_LOGI("wifi_connect_task", "Failed to connect to SSID: %s, password: %s", wifi_config.sta.ssid, wifi_config.sta.password);
-            esp_restart();
-        }
-    }
     vTaskDelete(NULL);
 }
 
@@ -2224,7 +2112,7 @@ static void handler_on_wifi_disconnect(void *arg, esp_event_base_t event_base, i
 {
     const char *tag = "handler_on_wifi_disconnect";
     connect_retry++;
-    if (connect_retry > 10)
+    if (connect_retry > max_connect_retry)
     {
         ESP_LOGI(tag, "WiFi Connect failed %d times, stop reconnect.", connect_retry);
 
@@ -2242,16 +2130,16 @@ static void handler_on_wifi_disconnect(void *arg, esp_event_base_t event_base, i
 
 static void handler_on_wifi_connect(void *esp_netif, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
-    ESP_LOGI("handler_on_wifi_connect", "Connected to AP");
-    if (ssid_loaded && password_loaded)
+    const char *tag = "handler_on_wifi_connect";
+    ESP_LOGI(tag, "Connected to AP");
+
+    // Запускаем синхронизацию времени
+    time_sync_start("MSK-3");
+
+    if (!ssid_loaded || !password_loaded)
     {
-        xTaskCreate(wifi_connect_task, "wifi_connect_task", 4096, NULL, 1, NULL);
-        xEventGroupSetBits(event_group, WIFI_START_BIT);
-    }
-    else
-    {
-        xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 1, NULL);
-        xEventGroupSetBits(event_group, SC_START_BIT);
+         xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 1, NULL);
+         xEventGroupSetBits(event_group, SC_START_BIT);
     }
 }
 
@@ -2284,10 +2172,6 @@ static void wifi_init(void)
     /* Инициализируем WiFi значениями по умолчанию */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    /* Регистрируем события в функции обработчике */
-    //  ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
-    //  ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, &ip_event_handler, NULL));
 
     connect_retry = 0;
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &handler_on_wifi_disconnect, NULL));
