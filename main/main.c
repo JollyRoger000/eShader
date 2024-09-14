@@ -1251,9 +1251,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     // иначе отправляем системный топик с invalid_url
                     if (!strncmp(_system.update_url, header, strlen(header)))
                     {
-                        // Сохраняем новое значение
-                        nvs_write_str("update_url", _system.update_url);
-
                         // Публикуем системный топик
                         char *str = mqttSystemJson(_system);
                         mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
@@ -1427,7 +1424,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         {
             ESP_LOGW(tag, "Unknown error type: 0x%x", event->error_handle->error_type);
         }
-        // esp_restart();
+        esp_restart();
         break;
 
     default:
@@ -1559,7 +1556,8 @@ static void ota_event_handler(void *arg, esp_event_base_t event_base, int32_t ev
             xEventGroupClearBits(event_group, OTA_CONNECT_BIT);
             break;
         case ESP_HTTPS_OTA_ABORT:
-            ESP_LOGI(tag, "OTA abort");
+            ESP_LOGE(tag, "OTA abort");
+            esp_restart();
             break;
         default:
             break;
@@ -1788,21 +1786,22 @@ static void ota_task(void *param)
     if (err != ESP_OK)
     {
         ESP_LOGE(tag, "ESP HTTPS OTA Begin failed");
-        vTaskDelete(NULL);
-    }
+        esp_restart();
+   }
 
     esp_app_desc_t app_desc;
     err = esp_https_ota_get_img_desc(https_ota_handle, &app_desc);
     if (err != ESP_OK)
     {
         ESP_LOGE(tag, "esp_https_ota_read_img_desc failed");
-        goto ota_end;
+        esp_restart();
     }
+    
     err = validate_image_header(&app_desc);
     if (err != ESP_OK)
     {
         ESP_LOGE(tag, "image header verification failed");
-        goto ota_end;
+        esp_restart();
     }
 
     while (1)
@@ -1840,6 +1839,9 @@ static void ota_task(void *param)
             // Сохраняем новое значение
             nvs_write_str("last_updated", _system.last_updated);
 
+            // Сохраняем url обновления
+            nvs_write_str("update_url", _system.update_url);
+
             vTaskDelay(pdMS_TO_TICKS(2000));
             esp_restart();
         }
@@ -1853,11 +1855,6 @@ static void ota_task(void *param)
             vTaskDelete(NULL);
         }
     }
-
-ota_end:
-    esp_https_ota_abort(https_ota_handle);
-    ESP_LOGE(tag, "ESP_HTTPS_OTA upgrade failed");
-    vTaskDelete(NULL);
 }
 
 /* Коллбек синхронизации времени по SNTP*/
