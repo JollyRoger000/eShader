@@ -158,31 +158,35 @@ static StatusStruct _status = {
 typedef struct
 {
     uint16_t max_steps;
-    char ow_key[50];
-    char tg_key[100];
-    char city[50];
-    char country[5];
-    char update_url[100];
-    char timezone[10];
-    char time_server1[50];
-    char time_server2[50];
-    char last_updated[50];
-    char ssid[32];
-    char password[64];
-    char ip[20];
+    char *ow_key;
+    char *tg_key;
+    char *city;
+    char *country;
+    char *update_url;
+    char *timezone;
+    char *time_server1;
+    char *time_server2;
+    char *last_updated;
+    char *ssid;
+    char *password;
+    char *ip;
 } SystemStruct;
 
 static SystemStruct _system = {
     .max_steps = DEFAULT_MAX_STEPS,
-    .ow_key = OPEN_WEATHER_MAP_TOKEN,
-    .city = CITY,
-    .country = COUNTRY,
-    .tg_key = TELEGRAM_BOT_TOKEN,
-    .update_url = UPDATE_URL,
-    .timezone = TZ,
-    .time_server1 = TIME_SERVER1,
-    .time_server2 = TIME_SERVER2,
-    .last_updated = "no_updated",
+    .ow_key = NULL,
+    .city = NULL,
+    .country = NULL,
+    .tg_key = NULL,
+    .update_url = NULL,
+    .timezone = NULL,
+    .time_server1 = NULL,
+    .time_server2 = NULL,
+    .last_updated = NULL,
+    .ssid = NULL,
+    .password = NULL,
+    .ip = NULL,
+
 };
 
 static EventGroupHandle_t event_group = NULL; // Группа событий
@@ -206,6 +210,8 @@ static bool password_loaded = false;
 static bool time_sync = false;
 static bool mqttConnected = false;
 static bool isStarted = false;
+static size_t ssid_size = 0;
+static size_t password_size = 0;
 
 static char mqttHostname[32];
 
@@ -235,16 +241,16 @@ static esp_err_t nvs_write_u8(char *key, uint8_t val);
 static esp_err_t nvs_write_u16(char *key, uint16_t val);
 static esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client);
 static esp_err_t http_event_handler(esp_http_client_event_t *evt);
-static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
-static void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void ota_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
+static void handler_on_wifi_disconnect(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+static void handler_on_wifi_connect(void *esp_netif, esp_event_base_t event_base, int32_t event_id, void *event_data);
+static void handler_on_sta_got_ip(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static httpd_handle_t server_setup(void);
-esp_err_t wifi_sta_do_disconnect(void);
 
 #define INDEX_HTML_PATH "/spiffs/index.html"
-    char index_html[4096];
+char index_html[4096];
 char response_data[4096];
 
 // Функция инициализации spiffs
@@ -1163,7 +1169,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    strcpy(_system.ow_key, data);
+                    _system.ow_key = malloc_string(data);
                     // Сохраняем новое значение
                     nvs_write_str("ow_key", _system.ow_key);
 
@@ -1185,7 +1191,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    strcpy(_system.tg_key, data);
+                    _system.tg_key = malloc_string(data);
                     // Сохраняем новое значение
                     nvs_write_str("tg_key", _system.tg_key);
 
@@ -1225,20 +1231,20 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             {
                                 str = malloc(size);
                                 err = nvs_get_str(nvs_handle, "update_url", str, &size);
-                                memcpy(_system.update_url, str, size);
+                                _system.update_url = malloc_string(str);
                                 ESP_LOGI(tag, "Last updade url reading success: %s", _system.update_url);
                             }
                         }
                         else
                         {
-                            strcpy(_system.update_url, UPDATE_URL);
+                            _system.update_url = malloc_string(UPDATE_URL);
                             ESP_LOGW(tag, "Last update url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.update_url);
                         }
                         nvs_close(nvs_handle);
                     }
                     else
                     {
-                        strcpy(_system.update_url, data);
+                        _system.update_url = malloc_string(data);
                     }
 
                     // Проверяем заголовок, если начинается с https:// то все норм
@@ -1262,7 +1268,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     else
                     {
                         ESP_LOGE(tag, "Invalid url");
-                        strcpy(_system.update_url, "invalid_url");
+                        _system.update_url = malloc_string("invalid_url");
                         //  Публикуем системный топик
                         char *str = mqttSystemJson(_system);
                         mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
@@ -1281,7 +1287,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Set new server time topic received: %s", data);
                 if (event->data_len > 0)
                 {
-                    strcpy(_system.time_server1, data);
+                    _system.time_server1 = malloc_string(data);
 
                     // Сохрапняем в nvs
                     nvs_write_str("server_time1", _system.time_server1);
@@ -1303,7 +1309,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Set new server time topic received: %s", data);
                 if (event->data_len > 0)
                 {
-                    strcpy(_system.time_server2, data);
+                    _system.time_server2 = malloc_string(data);
 
                     // Сохраняем в nvs
                     nvs_write_str("server_time2", _system.time_server2);
@@ -1326,7 +1332,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    strcpy(_system.timezone, data);
+                    _system.timezone = malloc_string(data);
 
                     // Сохраняем в nvs
                     nvs_write_str("timezone", _system.timezone);
@@ -1349,7 +1355,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    strcpy(_system.city, data);
+                    _system.city = malloc_string(data);
 
                     // Сохраняем в nvs
                     nvs_write_str("city", _system.city);
@@ -1371,7 +1377,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Set new country topic received: %s", data);
                 if (event->data_len > 0)
                 {
-                    strcpy(_system.country, data);
+                    _system.country = malloc_string(data);
 
                     // Сохраняем в nvs
                     nvs_write_str("country", _system.country);
@@ -2116,7 +2122,10 @@ static void handler_on_wifi_disconnect(void *arg, esp_event_base_t event_base, i
     {
         ESP_LOGI(tag, "WiFi Connect failed %d times, stop reconnect.", connect_retry);
 
-        wifi_sta_do_disconnect();
+        ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &handler_on_wifi_disconnect));
+        ESP_ERROR_CHECK(esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &handler_on_sta_got_ip));
+        ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &handler_on_wifi_connect));
+
         return;
     }
     ESP_LOGI(tag, "Wi-Fi disconnected, trying to reconnect...");
@@ -2138,8 +2147,8 @@ static void handler_on_wifi_connect(void *esp_netif, esp_event_base_t event_base
 
     if (!ssid_loaded || !password_loaded)
     {
-         xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 1, NULL);
-         xEventGroupSetBits(event_group, SC_START_BIT);
+        xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 1, NULL);
+        xEventGroupSetBits(event_group, SC_START_BIT);
     }
 }
 
@@ -2150,15 +2159,6 @@ static void handler_on_sta_got_ip(void *arg, esp_event_base_t event_base, int32_
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
 
     ESP_LOGI(tag, "Got IPv4 event: Interface \"%s\" address: " IPSTR, esp_netif_get_desc(event->esp_netif), IP2STR(&event->ip_info.ip));
-}
-
-esp_err_t wifi_sta_do_disconnect(void)
-{
-    ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &handler_on_wifi_disconnect));
-    ESP_ERROR_CHECK(esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &handler_on_sta_got_ip));
-    ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &handler_on_wifi_connect));
-
-    return esp_wifi_disconnect();
 }
 
 /* Функция инциализации WiFi*/
@@ -2179,6 +2179,8 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &handler_on_wifi_connect, NULL));
 
     // Переводим ESP в режим STA и запускаем WiFi
+    memcpy(wifi_config.sta.password, _system.password, password_size);
+    memcpy(wifi_config.sta.ssid, _system.ssid, ssid_size);
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -2294,14 +2296,12 @@ void app_main(void)
         size_t size;
         char *str = "";
         /* Читаем ssid из NVS*/
-        err = nvs_get_str(nvs_handle, "ssid", NULL, &size);
+        err = nvs_get_str(nvs_handle, "ssid", NULL, &ssid_size);
         if (err == ESP_OK)
         {
-            str = malloc(size);
-            err = nvs_get_str(nvs_handle, "ssid", str, &size);
-            memcpy(wifi_config.sta.ssid, str, size);
-            memcpy(_system.ssid, str, size);
-            ESP_LOGI(tag, "SSID reading success: %s", wifi_config.sta.ssid);
+            _system.ssid = malloc(ssid_size);
+            err = nvs_get_str(nvs_handle, "ssid", _system.ssid, &ssid_size);
+            ESP_LOGI(tag, "SSID reading success: %s", _system.ssid);
             ssid_loaded = true;
         }
         else
@@ -2311,14 +2311,12 @@ void app_main(void)
         }
 
         /* Читаем пароль из NVS */
-        err = nvs_get_str(nvs_handle, "pass", NULL, &size);
+        err = nvs_get_str(nvs_handle, "pass", NULL, &password_size);
         if (err == ESP_OK)
         {
-            str = malloc(size);
-            err = nvs_get_str(nvs_handle, "pass", str, &size);
-            memcpy(wifi_config.sta.password, str, size);
-            memcpy(_system.password, str, size);
-            ESP_LOGI(tag, "Password reading success: %s", wifi_config.sta.password);
+            _system.password = malloc(password_size);
+            err = nvs_get_str(nvs_handle, "pass", _system.password, &password_size);
+            ESP_LOGI(tag, "Password reading success: %s", _system.password);
             password_loaded = true;
         }
         else
@@ -2443,12 +2441,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "ow_key", str, &size);
-            memcpy(_system.ow_key, str, size);
+            _system.ow_key = malloc_string(str);  
             ESP_LOGI(tag, "Openweather api key reading success: %s", _system.ow_key);
         }
         else
         {
-            strcpy(_system.ow_key, OPEN_WEATHER_MAP_TOKEN);
+            _system.ow_key = malloc_string(OPEN_WEATHER_MAP_TOKEN);
             ESP_LOGW(tag, "Openweather api key reading error (%s). Set default key: %s", esp_err_to_name(err), _system.ow_key);
         }
         // Читаем Telegram api key
@@ -2457,13 +2455,13 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "tg_key", str, &size);
-            memcpy(_system.tg_key, str, size);
+            _system.tg_key = malloc_string(str);
             ESP_LOGI(tag, "Telegram api key reading success: %s", _system.tg_key);
         }
         else
         {
-            strcpy(_system.tg_key, TELEGRAM_BOT_TOKEN);
-            ESP_LOGW(tag, "Telegram api key reading error (%s). Set default key: %s", esp_err_to_name(err), _system.tg_key);
+            _system.tg_key = malloc_string(TELEGRAM_BOT_TOKEN);
+             ESP_LOGW(tag, "Telegram api key reading error (%s). Set default key: %s", esp_err_to_name(err), _system.tg_key);
         }
         // Читаем url сервера 1 синхронизации времени
         err = nvs_get_str(nvs_handle, "time_server1", NULL, &size);
@@ -2471,12 +2469,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "time_server1", str, &size);
-            memcpy(_system.time_server1, str, size);
+            _system.time_server1 = malloc_string(str);
             ESP_LOGI(tag, "Time server 1 reading success: %s", _system.time_server1);
         }
         else
         {
-            strcpy(_system.time_server1, TIME_SERVER1);
+            _system.time_server1 = malloc_string(TIME_SERVER1);
             ESP_LOGW(tag, "Time server 1 url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.time_server1);
         }
         // Читаем url сервера 2 синхронизации времени
@@ -2485,12 +2483,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "time_server2", str, &size);
-            memcpy(_system.time_server2, str, size);
+            _system.time_server2 = malloc_string(str);
             ESP_LOGI(tag, "Time server 2 reading success: %s", _system.time_server2);
         }
         else
         {
-            strcpy(_system.time_server2, TIME_SERVER2);
+            _system.time_server2 = malloc_string(TIME_SERVER2);
             ESP_LOGW(tag, "Time server 2 url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.time_server2);
         }
         // Читаем timezone
@@ -2499,12 +2497,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "timezone", str, &size);
-            memcpy(_system.timezone, str, size);
+            _system.timezone  = malloc_string(str);
             ESP_LOGI(tag, "Timezone reading success: %s", _system.time_server2);
         }
         else
         {
-            strcpy(_system.timezone, TZ);
+            _system.timezone = malloc_string(TZ);
             ESP_LOGW(tag, "Timezone reading error (%s). Set default tz: %s", esp_err_to_name(err), _system.timezone);
         }
         // Читаем код страны
@@ -2513,12 +2511,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "country", str, &size);
-            memcpy(_system.country, str, size);
+            _system.country = malloc_string(str);
             ESP_LOGI(tag, "Country code reading success: %s", _system.country);
         }
         else
         {
-            strcpy(_system.country, COUNTRY);
+            _system.country = malloc_string(COUNTRY);
             ESP_LOGW(tag, "Country code reading error (%s). Set default country: %s", esp_err_to_name(err), _system.country);
         }
         // Читаем код города
@@ -2527,12 +2525,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "city", str, &size);
-            memcpy(_system.city, str, size);
+            _system.city = malloc_string(str);
             ESP_LOGI(tag, "City code reading success: %s", _system.city);
         }
         else
         {
-            strcpy(_system.city, CITY);
+            _system.city = malloc_string(CITY);
             ESP_LOGW(tag, "City code reading error (%s). Set default city: %s", esp_err_to_name(err), _system.city);
         }
         // Читаем время последнего обновления системы
@@ -2541,12 +2539,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "last_updated", str, &size);
-            memcpy(_system.last_updated, str, size);
+            _system.last_updated = malloc_string(str);
             ESP_LOGI(tag, "Last updated time reading success: %s", _system.last_updated);
         }
         else
         {
-            strcpy(_system.last_updated, "no_updates");
+            _system.last_updated = malloc_string("no_updates");
             ESP_LOGW(tag, "Last updated time reading error (%s). Set default time: %s", esp_err_to_name(err), _system.last_updated);
         }
         // Читаем url последнего обновления системы
@@ -2555,12 +2553,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "update_url", str, &size);
-            memcpy(_system.update_url, str, size);
+            _system.update_url = malloc_string(str);
             ESP_LOGI(tag, "Last updade url reading success: %s", _system.update_url);
         }
         else
         {
-            strcpy(_system.update_url, UPDATE_URL);
+            _system.update_url = malloc_string(UPDATE_URL);
             ESP_LOGW(tag, "Last update url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.update_url);
         }
 
