@@ -126,7 +126,7 @@ typedef struct
     char *current_time;
     char sunrise_time[10];
     char sunset_time[10];
-    char last_ow_updated[20];
+    char *last_ow_updated;
     char *last_started;
     uint8_t on_sunrise;
     uint8_t on_sunset;
@@ -143,6 +143,8 @@ typedef struct
 
 static StatusStruct _status = {
     .current_time = NULL,
+    .last_started = NULL,
+    .last_ow_updated = NULL,
     .on_sunrise = 0,
     .on_sunset = 0,
     .shade_sunrise = 0,
@@ -1609,10 +1611,8 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
         strftime(_status.sunset_time, sizeof(_status.sunset_time), "%H:%M:%S", tm_sunset);
         ESP_LOGI(tag, "Time sunset: %s", _status.sunset_time);
 
-        time_t now;
-        time(&now);
-        tm_now = localtime(&now);
-        strftime(_status.last_ow_updated, sizeof(_status.last_ow_updated), "%d.%m.%Y %H:%M:%S", tm_now);
+        if(_status.last_ow_updated != NULL) free(_status.last_ow_updated);
+        _status.last_ow_updated = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
         ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_ow_updated);
 
         cJSON_Delete(str);
