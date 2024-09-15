@@ -123,7 +123,7 @@ typedef struct
 {
     time_t sunrise_time_unix; // В UNIX формате
     time_t sunset_time_unix;  // В UNIX формате
-    char current_time[20];
+    char *current_time;
     char sunrise_time[10];
     char sunset_time[10];
     char last_ow_updated[20];
@@ -142,6 +142,7 @@ typedef struct
 } StatusStruct;
 
 static StatusStruct _status = {
+    .current_time = NULL,
     .on_sunrise = 0,
     .on_sunset = 0,
     .shade_sunrise = 0,
@@ -927,12 +928,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
         mqttConnected = true;
 
-        time_t now;
-        time(&now);
-        tm_now = localtime(&now);
-        strftime(_status.current_time, sizeof(_status.current_time), "%d.%m.%Y %H:%M:%S", tm_now);
-
-        if (event->client != NULL)
+            if (event->client != NULL)
         {
             // Публикуем состояние и подписываемся на топики
             mqttSubscribe(event->client, mqttTopicCheckOnline, mqttTopicCheckOnlineQoS);
@@ -957,9 +953,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
             mqttPublish(event->client, mqttTopicCheckOnline, "online", mqttTopicCheckOnlineQoS, mqttTopicCheckOnlineRet);
 
+            _status.current_time = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
             char *status = mqttStatusJson(_status);
             mqttPublish(event->client, mqttTopicStatus, status, mqttTopicStatusQoS, mqttTopicStatusRet);
             free(status);
+            free(_status.current_time);
 
             char *system = mqttSystemJson(_system);
             mqttPublish(event->client, mqttTopicSystem, system, mqttTopicSystemQoS, mqttTopicSystemRet);
@@ -969,7 +967,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             strcpy(tgMessage, mqttHostname);
             strcat(tgMessage, "_online");
             send_telegram_message(tgMessage);
-            //                free(tgMessage);
+
         }
         break;
 
@@ -2208,13 +2206,13 @@ static void timer1_cb(TimerHandle_t pxTimer)
         wating_to_time_sync = 0;
 
         // Получаем текущую дату и время и записываем в структуру статуса
-        time_t now;
-        time(&now);
-        tm_now = localtime(&now);
-        if (tm_now != NULL)
-        {
+         time_t now;
+         time(&now);
+         tm_now = localtime(&now);
+         if (tm_now != NULL)
+         {
             // Преобразуем текущую дату в читаемый вид
-            strftime(_status.current_time, sizeof(_status.current_time), "%d.%m.%Y %H:%M:%S", tm_now);
+            _status.current_time = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
             // Запоминаем время запуска
             if (!isStarted)
             {
@@ -2225,6 +2223,7 @@ static void timer1_cb(TimerHandle_t pxTimer)
             // Выводим данные в консоль
             printf("\rSystem is active. Time now %s Working time %lld sec. Free heap %0.1f %%", _status.current_time, _status.working_time, esp_heap_free_percent());
             fflush(stdout);
+            free(_status.current_time);
 
             // Запускаем MQTT
             if (!mqttConnected)
