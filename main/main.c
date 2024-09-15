@@ -357,9 +357,9 @@ httpd_handle_t server_setup(void)
     return server;
 }
 
-char *malloc_string(const char *source)
+char *_string(const char *source)
 {
-    const char *tag = "malloc_string";
+    const char *tag = "_string";
     if (source)
     {
         uint32_t len = strlen(source);
@@ -375,6 +375,16 @@ char *malloc_string(const char *source)
         return ret;
     };
     return NULL;
+}
+
+char *_timestr(const char *format, time_t value, int bufsize)
+{
+  struct tm timeinfo;
+  localtime_r(&value, &timeinfo);
+  char buffer[bufsize];
+  memset(buffer, 0, sizeof(buffer));
+  strftime(buffer, sizeof(buffer), format, &timeinfo);
+  return _string(buffer);
 }
 
 // Функция для отправки сообщения в Telegram
@@ -1169,7 +1179,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    _system.ow_key = malloc_string(data);
+                    _system.ow_key = _string(data);
                     // Сохраняем новое значение
                     nvs_write_str("ow_key", _system.ow_key);
 
@@ -1191,7 +1201,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    _system.tg_key = malloc_string(data);
+                    _system.tg_key = _string(data);
                     // Сохраняем новое значение
                     nvs_write_str("tg_key", _system.tg_key);
 
@@ -1231,20 +1241,20 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             {
                                 str = malloc(size);
                                 err = nvs_get_str(nvs_handle, "update_url", str, &size);
-                                _system.update_url = malloc_string(str);
+                                _system.update_url = _string(str);
                                 ESP_LOGI(tag, "Last updade url reading success: %s", _system.update_url);
                             }
                         }
                         else
                         {
-                            _system.update_url = malloc_string(UPDATE_URL);
+                            _system.update_url = _string(UPDATE_URL);
                             ESP_LOGW(tag, "Last update url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.update_url);
                         }
                         nvs_close(nvs_handle);
                     }
                     else
                     {
-                        _system.update_url = malloc_string(data);
+                        _system.update_url = _string(data);
                     }
 
                     // Проверяем заголовок, если начинается с https:// то все норм
@@ -1265,7 +1275,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     else
                     {
                         ESP_LOGE(tag, "Invalid url");
-                        _system.update_url = malloc_string("invalid_url");
+                        _system.update_url = _string("invalid_url");
                         //  Публикуем системный топик
                         char *str = mqttSystemJson(_system);
                         mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
@@ -1284,7 +1294,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Set new server time topic received: %s", data);
                 if (event->data_len > 0)
                 {
-                    _system.time_server1 = malloc_string(data);
+                    _system.time_server1 = _string(data);
 
                     // Сохрапняем в nvs
                     nvs_write_str("server_time1", _system.time_server1);
@@ -1306,7 +1316,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Set new server time topic received: %s", data);
                 if (event->data_len > 0)
                 {
-                    _system.time_server2 = malloc_string(data);
+                    _system.time_server2 = _string(data);
 
                     // Сохраняем в nvs
                     nvs_write_str("server_time2", _system.time_server2);
@@ -1329,7 +1339,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    _system.timezone = malloc_string(data);
+                    _system.timezone = _string(data);
 
                     // Сохраняем в nvs
                     nvs_write_str("timezone", _system.timezone);
@@ -1352,7 +1362,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    _system.city = malloc_string(data);
+                    _system.city = _string(data);
 
                     // Сохраняем в nvs
                     nvs_write_str("city", _system.city);
@@ -1374,7 +1384,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Set new country topic received: %s", data);
                 if (event->data_len > 0)
                 {
-                    _system.country = malloc_string(data);
+                    _system.country = _string(data);
 
                     // Сохраняем в nvs
                     nvs_write_str("country", _system.country);
@@ -1832,8 +1842,10 @@ static void ota_task(void *param)
             // Получаем время последнего обновления и сохраняем в nvs
             time_t now;
             time(&now);
-            tm_now = localtime(&now);
-            strftime(_system.last_updated, sizeof(_system.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
+            //tm_now = localtime(&now);
+            //strftime(_system.last_updated, sizeof(_system.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
+            
+            _system.last_updated = _timestr("%d.%m.%Y %H:%M:%S", now, 16);
             ESP_LOGI(tag, "Last updated: %s", _system.last_updated);
 
             // Сохраняем новое значение
@@ -2438,12 +2450,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "ow_key", str, &size);
-            _system.ow_key = malloc_string(str);  
+            _system.ow_key = _string(str);  
             ESP_LOGI(tag, "Openweather api key reading success: %s", _system.ow_key);
         }
         else
         {
-            _system.ow_key = malloc_string(OPEN_WEATHER_MAP_TOKEN);
+            _system.ow_key = _string(OPEN_WEATHER_MAP_TOKEN);
             ESP_LOGW(tag, "Openweather api key reading error (%s). Set default key: %s", esp_err_to_name(err), _system.ow_key);
         }
         // Читаем Telegram api key
@@ -2452,12 +2464,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "tg_key", str, &size);
-            _system.tg_key = malloc_string(str);
+            _system.tg_key = _string(str);
             ESP_LOGI(tag, "Telegram api key reading success: %s", _system.tg_key);
         }
         else
         {
-            _system.tg_key = malloc_string(TELEGRAM_BOT_TOKEN);
+            _system.tg_key = _string(TELEGRAM_BOT_TOKEN);
              ESP_LOGW(tag, "Telegram api key reading error (%s). Set default key: %s", esp_err_to_name(err), _system.tg_key);
         }
         // Читаем url сервера 1 синхронизации времени
@@ -2466,12 +2478,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "time_server1", str, &size);
-            _system.time_server1 = malloc_string(str);
+            _system.time_server1 = _string(str);
             ESP_LOGI(tag, "Time server 1 reading success: %s", _system.time_server1);
         }
         else
         {
-            _system.time_server1 = malloc_string(TIME_SERVER1);
+            _system.time_server1 = _string(TIME_SERVER1);
             ESP_LOGW(tag, "Time server 1 url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.time_server1);
         }
         // Читаем url сервера 2 синхронизации времени
@@ -2480,12 +2492,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "time_server2", str, &size);
-            _system.time_server2 = malloc_string(str);
+            _system.time_server2 = _string(str);
             ESP_LOGI(tag, "Time server 2 reading success: %s", _system.time_server2);
         }
         else
         {
-            _system.time_server2 = malloc_string(TIME_SERVER2);
+            _system.time_server2 = _string(TIME_SERVER2);
             ESP_LOGW(tag, "Time server 2 url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.time_server2);
         }
         // Читаем timezone
@@ -2494,12 +2506,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "timezone", str, &size);
-            _system.timezone  = malloc_string(str);
+            _system.timezone  = _string(str);
             ESP_LOGI(tag, "Timezone reading success: %s", _system.time_server2);
         }
         else
         {
-            _system.timezone = malloc_string(TZ);
+            _system.timezone = _string(TZ);
             ESP_LOGW(tag, "Timezone reading error (%s). Set default tz: %s", esp_err_to_name(err), _system.timezone);
         }
         // Читаем код страны
@@ -2508,12 +2520,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "country", str, &size);
-            _system.country = malloc_string(str);
+            _system.country = _string(str);
             ESP_LOGI(tag, "Country code reading success: %s", _system.country);
         }
         else
         {
-            _system.country = malloc_string(COUNTRY);
+            _system.country = _string(COUNTRY);
             ESP_LOGW(tag, "Country code reading error (%s). Set default country: %s", esp_err_to_name(err), _system.country);
         }
         // Читаем код города
@@ -2522,12 +2534,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "city", str, &size);
-            _system.city = malloc_string(str);
+            _system.city = _string(str);
             ESP_LOGI(tag, "City code reading success: %s", _system.city);
         }
         else
         {
-            _system.city = malloc_string(CITY);
+            _system.city = _string(CITY);
             ESP_LOGW(tag, "City code reading error (%s). Set default city: %s", esp_err_to_name(err), _system.city);
         }
         // Читаем время последнего обновления системы
@@ -2536,12 +2548,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "last_updated", str, &size);
-            _system.last_updated = malloc_string(str);
+            _system.last_updated = _string(str);
             ESP_LOGI(tag, "Last updated time reading success: %s", _system.last_updated);
         }
         else
         {
-            _system.last_updated = malloc_string("no_updates");
+            _system.last_updated = _string("no_updates");
             ESP_LOGW(tag, "Last updated time reading error (%s). Set default time: %s", esp_err_to_name(err), _system.last_updated);
         }
         // Читаем url последнего обновления системы
@@ -2550,12 +2562,12 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "update_url", str, &size);
-            _system.update_url = malloc_string(str);
+            _system.update_url = _string(str);
             ESP_LOGI(tag, "Last updade url reading success: %s", _system.update_url);
         }
         else
         {
-            _system.update_url = malloc_string(UPDATE_URL);
+            _system.update_url = _string(UPDATE_URL);
             ESP_LOGW(tag, "Last update url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.update_url);
         }
 
