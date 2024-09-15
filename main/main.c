@@ -127,7 +127,7 @@ typedef struct
     char sunrise_time[10];
     char sunset_time[10];
     char last_ow_updated[20];
-    char last_started[20];
+    char *last_started;
     uint8_t on_sunrise;
     uint8_t on_sunset;
     uint8_t shade_sunrise;
@@ -2212,18 +2212,20 @@ static void timer1_cb(TimerHandle_t pxTimer)
          if (tm_now != NULL)
          {
             // Преобразуем текущую дату в читаемый вид
+            
+            if(_status.current_time != NULL) free(_status.current_time);
             _status.current_time = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
             // Запоминаем время запуска
             if (!isStarted)
             {
-                strftime(_status.last_started, sizeof(_status.last_started), "%d.%m.%Y %H:%M:%S", tm_now);
+                if(_status.last_started != NULL) free(_status.last_started);
+                _status.last_started = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
                 isStarted = true;
             }
 
             // Выводим данные в консоль
             printf("\rSystem is active. Time now %s Working time %lld sec. Free heap %0.1f %%", _status.current_time, _status.working_time, esp_heap_free_percent());
             fflush(stdout);
-            free(_status.current_time);
 
             // Запускаем MQTT
             if (!mqttConnected)
