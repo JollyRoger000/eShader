@@ -74,6 +74,7 @@ const char *mqttReserveServer = LOCAL_MOSQUITTO_SERVER;
 const char *mqttReserveUser = LOCAL_MOSQUITTO_USER;
 const char *mqttReservePass = LOCAL_MOSQUITTO_PASSWORD;
 
+static char *mqttPrefix = NULL;
 static char *mqttTopicCheckOnline = NULL;
 static char *mqttTopicControl = NULL;
 static char *mqttTopicStatus = NULL;
@@ -119,78 +120,38 @@ static int mqttTopicStatusRet = 0;
 static int mqttTopicCheckOnlineRet = 0;
 static int mqttTopicSystemRet = 0;
 
-typedef struct
-{
-    time_t sunrise_time_unix; // В UNIX формате
-    time_t sunset_time_unix;  // В UNIX формате
-    char *current_time;
-    char sunrise_time[10];
-    char sunset_time[10];
-    char *last_ow_updated;
-    char *last_started;
-    uint8_t on_sunrise;
-    uint8_t on_sunset;
-    uint8_t shade_sunrise;
-    uint8_t shade_sunset;
-    char move_status[16];
-    uint8_t shade;
-    uint8_t cal_status;
-    uint16_t target_pos;
-    uint16_t current_pos;
-    uint16_t length;
-    uint64_t working_time;
-} StatusStruct;
+char *location = NULL;
+char *frendly_name = NULL;
+char *sunrise = NULL;
+char *sunset = NULL;
+char *last_ow_updated = NULL;
+char *last_started = NULL;
+char *ow_key = NULL;
+char *tg_key = NULL;
+char *city = NULL;
+char *country = NULL;
+char *update_url = NULL;
+char *timezone = NULL;
+char *time_server1 = NULL;
+char *time_server2 = NULL;
+char *last_updated = NULL;
+char *ssid = NULL;
+char *password = NULL;
+char *ip = NULL;
+char *move_status = NULL;
 
-static StatusStruct _status = {
-    .current_time = NULL,
-    .last_started = NULL,
-    .last_ow_updated = NULL,
-    .on_sunrise = 0,
-    .on_sunset = 0,
-    .shade_sunrise = 0,
-    .shade_sunset = 0,
-    .shade = 0,
-    .move_status = "stopped",
-    .cal_status = 0,
-    .target_pos = 0,
-    .current_pos = 0,
-    .length = 0,
-    .working_time = 0,
-};
-
-typedef struct
-{
-    uint16_t max_steps;
-    char *ow_key;
-    char *tg_key;
-    char *city;
-    char *country;
-    char *update_url;
-    char *timezone;
-    char *time_server1;
-    char *time_server2;
-    char *last_updated;
-    char *ssid;
-    char *password;
-    char *ip;
-} SystemStruct;
-
-static SystemStruct _system = {
-    .max_steps = DEFAULT_MAX_STEPS,
-    .ow_key = NULL,
-    .city = NULL,
-    .country = NULL,
-    .tg_key = NULL,
-    .update_url = NULL,
-    .timezone = NULL,
-    .time_server1 = NULL,
-    .time_server2 = NULL,
-    .last_updated = NULL,
-    .ssid = NULL,
-    .password = NULL,
-    .ip = NULL,
-
-};
+time_t sunrise_time = 0;
+time_t sunset_time = 0;
+uint8_t move_on_sunrise = 0;
+uint8_t move_on_sunset = 0;
+uint8_t shade_sunrise = 0;
+uint8_t shade_sunset = 0;
+uint8_t shade = 0;
+uint8_t calibrate = 0;
+uint16_t target_pos = 0;
+uint16_t current_pos = 0;
+uint16_t length = 0;
+uint64_t working_time = 0;
 
 static EventGroupHandle_t event_group = NULL; // Группа событий
 static TaskHandle_t calibrate_task_handle = NULL;
@@ -216,7 +177,7 @@ static bool isStarted = false;
 static size_t ssid_size = 0;
 static size_t password_size = 0;
 
-static char mqttHostname[32];
+static char *mqttHostname = NULL;
 
 static struct tm *tm_now;
 static struct tm *tm_sunset;
@@ -238,8 +199,8 @@ static void ota_task(void *param);
 static void led_task(void *param);
 static void init_btn_task(void *param);
 static bool mqttPublish(esp_mqtt_client_handle_t client, char *topic, char *data, int qos, int retain);
-static char *mqttStatusJson(StatusStruct status);
-static char *mqttSystemJson(SystemStruct status);
+static char *mqttStatusJson();
+static char *mqttSystemJson();
 static esp_err_t nvs_write_u8(char *key, uint8_t val);
 static esp_err_t nvs_write_u16(char *key, uint16_t val);
 static esp_err_t _http_client_init_cb(esp_http_client_handle_t http_client);
@@ -380,14 +341,65 @@ char *_string(const char *source)
     return NULL;
 }
 
+char *_stringf(const char *format, ...)
+{
+    const char *tag = "_stringf";
+    char *ret = NULL;
+    if (format != NULL)
+    {
+        // get the list of arguments
+        va_list args1, args2;
+        va_start(args1, format);
+        va_copy(args2, args1);
+        // calculate length of resulting string
+        int len = vsnprintf(NULL, 0, format, args1);
+        va_end(args1);
+        // allocate memory for string
+        if (len > 0)
+        {
+            ret = (char *)malloc(len + 1);
+            if (ret != NULL)
+            {
+                memset(ret, 0, len + 1);
+                vsnprintf(ret, len + 1, format, args2);
+            }
+            else
+            {
+                ESP_LOGE(tag, "Failed to format string: out of memory!");
+            };
+        };
+        va_end(args2);
+    };
+    return ret;
+}
+
+char *_stringl(const char *source, const uint32_t len)
+{
+    const char *tag = "_stringl";
+    if (source)
+    {
+
+        char *ret = (char *)malloc(len + 1);
+        if (ret == NULL)
+        {
+            ESP_LOGE(tag, "Failed to create string: out of memory!");
+            return NULL;
+        }
+        memset(ret, 0, len + 1);
+        strncpy(ret, source, len);
+        return ret;
+    };
+    return NULL;
+}
+
 char *_timestr(const char *format, time_t value, int bufsize)
 {
-  struct tm timeinfo;
-  localtime_r(&value, &timeinfo);
-  char buffer[bufsize];
-  memset(buffer, 0, sizeof(buffer));
-  strftime(buffer, sizeof(buffer), format, &timeinfo);
-  return _string(buffer);
+    struct tm timeinfo;
+    localtime_r(&value, &timeinfo);
+    char buffer[bufsize];
+    memset(buffer, 0, sizeof(buffer));
+    strftime(buffer, sizeof(buffer), format, &timeinfo);
+    return _string(buffer);
 }
 
 // Функция для отправки сообщения в Telegram
@@ -447,11 +459,11 @@ static void onCalibrate()
     char *tag = "on_calibrate";
     ESP_LOGW(tag, "CALIBRATE message received");
 
-    strcpy(_status.move_status, "calibrating");
-    _status.cal_status = 0;
+    strcpy(move_status, "calibrating");
+    calibrate = 0;
 
     // Публикуем топик статуса
-    char *str = mqttStatusJson(_status);
+    char *str = mqttStatusJson();
     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
     free(str);
     // Запускаем задачу калибровки
@@ -465,39 +477,39 @@ static void onStop()
     ESP_LOGW(tag, "STOP message received");
 
     // Если был запущен процесс калибровки, останавливаем и сохранаяем данные
-    if (strcmp(_status.move_status, "calibrating") == 0)
+    if (strcmp(move_status, "calibrating") == 0)
     {
         vTaskSuspend(calibrate_task_handle);
         gpio_set_level(LED_STATUS, 0);
-        _status.length = calibrateCnt;
-        _status.cal_status = 1;
-        _status.current_pos = _status.length;
-        _status.target_pos = _status.length;
-        strcpy(_status.move_status, "stopped");
+        length = calibrateCnt;
+        calibrate = 1;
+        current_pos = length;
+        target_pos = length;
+        strcpy(move_status, "stopped");
 
-        ESP_LOGI(tag, "Calibrate success. Shade lenght is: %d", _status.length);
-        nvs_write_u16("length", _status.length);
-        nvs_write_u8("cal_status", _status.cal_status);
-        nvs_write_u16("current_pos", _status.current_pos);
-        nvs_write_u16("target_pos", _status.target_pos);
+        ESP_LOGI(tag, "Calibrate success. Shade lenght is: %d", length);
+        nvs_write_u16("length", length);
+        nvs_write_u8("cal_status", calibrate);
+        nvs_write_u16("current_pos", current_pos);
+        nvs_write_u16("target_pos", target_pos);
 
         // Публикуем топик статуса
-        char *str = mqttStatusJson(_status);
+        char *str = mqttStatusJson();
         mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
         free(str);
     }
-    else if (!strcmp(_status.move_status, "opening") || !strcmp(_status.move_status, "closing"))
+    else if (!strcmp(move_status, "opening") || !strcmp(move_status, "closing"))
     {
         vTaskSuspend(move_task_handle);
         gpio_set_level(LED_STATUS, 0);
-        strcpy(_status.move_status, "stopped");
+        strcpy(move_status, "stopped");
 
-        _status.target_pos = _status.current_pos;
-        nvs_write_u16("current_pos", _status.current_pos);
-        nvs_write_u16("target_pos", _status.target_pos);
+        target_pos = current_pos;
+        nvs_write_u16("current_pos", current_pos);
+        nvs_write_u16("target_pos", target_pos);
 
         // Публикуем топик статуса
-        char *str = mqttStatusJson(_status);
+        char *str = mqttStatusJson();
         mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
         free(str);
     }
@@ -513,19 +525,19 @@ static void onShade(int shade)
     char *tag = "on_shade";
     ESP_LOGI(tag, "New shade: (%d) message received", shade);
 
-    _status.shade = shade;
-    if (_status.cal_status == 1)
+    shade = shade;
+    if (calibrate == 1)
     {
         xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
     }
     else
     {
         ESP_LOGW(tag, "Shade is not calibrated");
-        strcpy(_status.move_status, "stopped");
+        strcpy(move_status, "stopped");
     }
 
     /// Публикуем топик статуса
-    char *str = mqttStatusJson(_status);
+    char *str = mqttStatusJson();
     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
     free(str);
 }
@@ -535,107 +547,69 @@ static void time_sync_start(const char *tz)
     const char *tag = "time_sync_start";
     ESP_LOGI(tag, "started");
     // Выбираем часовой пояс и запускаем синхронизацию времени с SNTP
-    setenv("TZ", _system.timezone, 1);
+    setenv("TZ", timezone, 1);
     tzset();
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, _system.time_server1);
-    esp_sntp_setservername(1, _system.time_server2);
+    esp_sntp_setservername(0, time_server1);
+    esp_sntp_setservername(1, time_server2);
     sntp_set_time_sync_notification_cb(time_sync_cb);
     esp_sntp_init();
 }
 
 /* Функция преобразования структуры статуса в json строку*/
-static char *mqttStatusJson(StatusStruct s)
+static char *mqttStatusJson()
 {
     char *str = NULL;
 
     cJSON *json = cJSON_CreateObject();
-    if (json == NULL)
-        return NULL;
-    else
-    {
-        if (cJSON_AddStringToObject(json, "local_time", s.current_time) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "last_started", s.last_started) == NULL)
-            return NULL;
-        if (cJSON_AddNumberToObject(json, "working_time", s.working_time) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "last_ow_updated", s.last_ow_updated) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "sunrise_time", s.sunrise_time) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "sunset_time", s.sunset_time) == NULL)
-            return NULL;
-        if (cJSON_AddNumberToObject(json, "shade_on_sunrise", s.shade_sunrise) == NULL)
-            return NULL;
-        if (cJSON_AddNumberToObject(json, "shade_on_sunset", s.shade_sunset) == NULL)
-            return NULL;
-        if (cJSON_AddNumberToObject(json, "on_sunrise", s.on_sunrise) == NULL)
-            return NULL;
-        if (cJSON_AddNumberToObject(json, "on_sunset", s.on_sunset) == NULL)
-            return NULL;
-        if (cJSON_AddNumberToObject(json, "cal_status", s.cal_status) == NULL)
-            return NULL;
-        if (cJSON_AddNumberToObject(json, "length", s.length) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "move_status", s.move_status) == NULL)
-            return NULL;
-        if (cJSON_AddNumberToObject(json, "current_shade", s.shade) == NULL)
-            return NULL;
-        if (cJSON_AddNumberToObject(json, "current_pos", s.current_pos) == NULL)
-            return NULL;
-        if (cJSON_AddNumberToObject(json, "target_pos", s.target_pos) == NULL)
-            return NULL;
+    char *tmp = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
+    cJSON_AddStringToObject(json, "local_time", tmp);
+    vPortFree(tmp);
+    cJSON_AddStringToObject(json, "last_started", last_started);
+    cJSON_AddNumberToObject(json, "working_time", working_time);
+    cJSON_AddStringToObject(json, "last_ow_updated", last_ow_updated);
+    cJSON_AddStringToObject(json, "sunrise_time", sunrise);
+    cJSON_AddStringToObject(json, "sunset_time", sunset);
+    cJSON_AddNumberToObject(json, "shade_on_sunrise", shade_sunrise);
+    cJSON_AddNumberToObject(json, "shade_on_sunset", shade_sunset);
+    cJSON_AddNumberToObject(json, "on_sunrise", move_on_sunrise);
+    cJSON_AddNumberToObject(json, "on_sunset", move_on_sunset);
+    cJSON_AddNumberToObject(json, "cal_status", calibrate);
+    cJSON_AddNumberToObject(json, "length", length);
+    cJSON_AddStringToObject(json, "move_status", move_status);
+    cJSON_AddNumberToObject(json, "current_shade", shade);
+    cJSON_AddNumberToObject(json, "current_pos", current_pos);
+    cJSON_AddNumberToObject(json, "target_pos", target_pos);
+    cJSON_AddNumberToObject(json, "free_heap", esp_heap_free_percent());
 
-        str = cJSON_Print(json);
-        cJSON_Delete(json);
-    }
+    str = cJSON_Print(json);
+    cJSON_Delete(json);
 
     return str;
 }
 
 /* Функция преобразования структуры параметров системы в json строку*/
-static char *mqttSystemJson(SystemStruct s)
+static char *mqttSystemJson()
 {
     char *str = NULL;
 
     cJSON *json = cJSON_CreateObject();
-    if (json == NULL)
-        return NULL;
-    else
-    {
-        if (cJSON_AddStringToObject(json, "ssid", s.ssid) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "password", s.password) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "local ip", s.ip) == NULL)
-            return NULL;
-        if (cJSON_AddNumberToObject(json, "max_steps", s.max_steps) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "country", s.country) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "city", s.city) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "timezone", s.timezone) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "time_server1", s.time_server1) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "time_server2", s.time_server2) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "ow_key", s.ow_key) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "tg_key", s.tg_key) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "last_system_updated", s.last_updated) == NULL)
-            return NULL;
-        if (cJSON_AddStringToObject(json, "update_url", s.update_url) == NULL)
-            return NULL;
-        if (cJSON_AddNumberToObject(json, "free_heap", esp_heap_free_percent()) == NULL)
-            return NULL;
+    cJSON_AddStringToObject(json, "ssid", ssid);
+    cJSON_AddStringToObject(json, "password", password);
+    cJSON_AddStringToObject(json, "local ip", ip);
+    cJSON_AddStringToObject(json, "country", country);
+    cJSON_AddStringToObject(json, "city", city);
+    cJSON_AddStringToObject(json, "timezone", timezone);
+    cJSON_AddStringToObject(json, "time_server1", time_server1);
+    cJSON_AddStringToObject(json, "time_server2", time_server2);
+    cJSON_AddStringToObject(json, "ow_key", ow_key);
+    cJSON_AddStringToObject(json, "tg_key", tg_key);
+    cJSON_AddStringToObject(json, "last_system_updated", last_updated);
+    cJSON_AddStringToObject(json, "update_url", update_url);
+    cJSON_AddNumberToObject(json, "free_heap", esp_heap_free_percent());
 
-        str = cJSON_Print(json);
-        cJSON_Delete(json);
-    }
+    str = cJSON_Print(json);
+    cJSON_Delete(json);
 
     return str;
 }
@@ -761,7 +735,11 @@ static bool mqttPublish(esp_mqtt_client_handle_t client, char *topic, char *data
     char *tag = "mqttPublish";
 
     if (client == NULL || topic == NULL || data == NULL)
+    {
+        ESP_LOGE(tag, "NULL arguments");
         return false;
+    }
+
     else
     {
         if (esp_mqtt_client_publish(client, topic, data, strlen(data), qos, retain) != -1)
@@ -779,13 +757,15 @@ static bool mqttPublish(esp_mqtt_client_handle_t client, char *topic, char *data
 
 static void publish_task(void *params)
 {
+    const char *tag = "publish_task";
     while (true)
     {
         if (mqttConnected)
         {
-            char *str = mqttStatusJson(_status);
+            char *str = mqttStatusJson();
             mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-            free(str);
+            if (str != NULL)
+                vPortFree(str);
         }
         vTaskDelay(pdMS_TO_TICKS(60000));
     }
@@ -796,89 +776,29 @@ static void mqtt_start(void)
     char *tag = "mqtt_start";
     esp_err_t err;
     uint8_t mac[6];
-
-    mqttTopicStatus = (char *)calloc(250, sizeof(char));
-    mqttTopicCheckOnline = (char *)calloc(50, sizeof(char));
-    mqttTopicControl = (char *)calloc(50, sizeof(char));
-    mqttTopicStatus = (char *)calloc(50, sizeof(char));
-    mqttTopicTimers = (char *)calloc(50, sizeof(char));
-    mqttTopicAddTimer = (char *)calloc(50, sizeof(char));
-    mqttTopicAddSunrise = (char *)calloc(50, sizeof(char));
-    mqttTopicAddSunset = (char *)calloc(50, sizeof(char));
-    mqttTopicDelSunrise = (char *)calloc(50, sizeof(char));
-    mqttTopicDelSunset = (char *)calloc(50, sizeof(char));
-    mqttTopicSystem = (char *)calloc(50, sizeof(char));
-    mqttTopicSystemUpdate = (char *)calloc(50, sizeof(char));
-    mqttTopicSystemMaxSteps = (char *)calloc(50, sizeof(char));
-    mqttTopicSystemTGKey = (char *)calloc(50, sizeof(char));
-    mqttTopicSystemOWKey = (char *)calloc(50, sizeof(char));
-    mqttTopicSystemServerTime1 = (char *)calloc(50, sizeof(char));
-    mqttTopicSystemServerTime2 = (char *)calloc(50, sizeof(char));
-    mqttTopicSystemTimeZone = (char *)calloc(50, sizeof(char));
-    mqttTopicSystemCountry = (char *)calloc(50, sizeof(char));
-    mqttTopicSystemCity = (char *)calloc(50, sizeof(char));
-
     err = esp_efuse_mac_get_default(mac);
 
     if (err == ESP_OK)
     {
-        sprintf(mqttHostname, "eShader-%x:%x:%x:%x:%x:%x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        strcpy(mqttTopicCheckOnline, mqttHostname);
-        strcat(mqttTopicCheckOnline, "/checkonline");
-
-        strcpy(mqttTopicControl, mqttHostname);
-        strcat(mqttTopicControl, "/control");
-
-        strcpy(mqttTopicStatus, mqttHostname);
-        strcat(mqttTopicStatus, "/status");
-
-        strcpy(mqttTopicTimers, mqttHostname);
-        strcat(mqttTopicTimers, "/timers");
-
-        strcpy(mqttTopicAddTimer, mqttHostname);
-        strcat(mqttTopicAddTimer, "/addtimer");
-
-        strcpy(mqttTopicAddSunrise, mqttHostname);
-        strcat(mqttTopicAddSunrise, "/addsunrise");
-
-        strcpy(mqttTopicAddSunset, mqttHostname);
-        strcat(mqttTopicAddSunset, "/addsunset");
-
-        strcpy(mqttTopicDelSunset, mqttHostname);
-        strcat(mqttTopicDelSunset, "/delsunset");
-
-        strcpy(mqttTopicDelSunrise, mqttHostname);
-        strcat(mqttTopicDelSunrise, "/delsunrise");
-
-        strcpy(mqttTopicSystem, mqttHostname);
-        strcat(mqttTopicSystem, "/system");
-
-        strcpy(mqttTopicSystemUpdate, mqttHostname);
-        strcat(mqttTopicSystemUpdate, "/system/update");
-
-        strcpy(mqttTopicSystemMaxSteps, mqttHostname);
-        strcat(mqttTopicSystemMaxSteps, "/system/maxsteps");
-
-        strcpy(mqttTopicSystemTGKey, mqttHostname);
-        strcat(mqttTopicSystemTGKey, "/system/tgkey");
-
-        strcpy(mqttTopicSystemOWKey, mqttHostname);
-        strcat(mqttTopicSystemOWKey, "/system/owkey");
-
-        strcpy(mqttTopicSystemServerTime1, mqttHostname);
-        strcat(mqttTopicSystemServerTime1, "/system/servertime1");
-
-        strcpy(mqttTopicSystemServerTime2, mqttHostname);
-        strcat(mqttTopicSystemServerTime2, "/system/servertime2");
-
-        strcpy(mqttTopicSystemTimeZone, mqttHostname);
-        strcat(mqttTopicSystemTimeZone, "/system/timezone");
-
-        strcpy(mqttTopicSystemCity, mqttHostname);
-        strcat(mqttTopicSystemCity, "/system/city");
-
-        strcpy(mqttTopicSystemCountry, mqttHostname);
-        strcat(mqttTopicSystemCountry, "/system/country");
+        mqttHostname = _stringf("eShader-%x:%x:%x:%x:%x:%x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        mqttTopicCheckOnline = _stringf("%s/checkonline", mqttHostname);
+        mqttTopicControl = _stringf("%s/control", mqttHostname);
+        mqttTopicStatus = _stringf("%s/status", mqttHostname);
+        mqttTopicTimers = _stringf("%s/timers", mqttHostname);
+        mqttTopicAddTimer = _stringf("%s/addtimer", mqttHostname);
+        mqttTopicAddSunrise = _stringf("%s/addsunrise", mqttHostname);
+        mqttTopicAddSunset = _stringf("%s/addsunset", mqttHostname);
+        mqttTopicDelSunrise = _stringf("%s/delsunrise", mqttHostname);
+        mqttTopicDelSunset = _stringf("%s/delsunset", mqttHostname);
+        mqttTopicSystem = _stringf("%s/system", mqttHostname);
+        mqttTopicSystemUpdate = _stringf("%s/system/update", mqttHostname);
+        mqttTopicSystemTGKey = _stringf("%s/system/tgkey", mqttHostname);
+        mqttTopicSystemOWKey = _stringf("%s/system/owkey", mqttHostname);
+        mqttTopicSystemServerTime1 = _stringf("%s/system/servertime1", mqttHostname);
+        mqttTopicSystemServerTime2 = _stringf("%s/system/servertime2", mqttHostname);
+        mqttTopicSystemTimeZone = _stringf("%s/system/timezone", mqttHostname);
+        mqttTopicSystemCountry = _stringf("%s/system/country", mqttHostname);
+        mqttTopicSystemCity = _stringf("%s/system/city", mqttHostname);
 
         esp_mqtt_client_config_t *mqtt_cfg;
         mqtt_cfg = (esp_mqtt_client_config_t *)calloc(1, sizeof(esp_mqtt_client_config_t));
@@ -930,7 +850,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
         mqttConnected = true;
 
-            if (event->client != NULL)
+        if (event->client != NULL)
         {
             // Публикуем состояние и подписываемся на топики
             mqttSubscribe(event->client, mqttTopicCheckOnline, mqttTopicCheckOnlineQoS);
@@ -955,13 +875,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
             mqttPublish(event->client, mqttTopicCheckOnline, "online", mqttTopicCheckOnlineQoS, mqttTopicCheckOnlineRet);
 
-            _status.current_time = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
-            char *status = mqttStatusJson(_status);
+            char *status = mqttStatusJson();
             mqttPublish(event->client, mqttTopicStatus, status, mqttTopicStatusQoS, mqttTopicStatusRet);
             free(status);
-            free(_status.current_time);
 
-            char *system = mqttSystemJson(_system);
+            char *system = mqttSystemJson();
             mqttPublish(event->client, mqttTopicSystem, system, mqttTopicSystemQoS, mqttTopicSystemRet);
             free(system);
 
@@ -969,7 +887,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             strcpy(tgMessage, mqttHostname);
             strcat(tgMessage, "_online");
             send_telegram_message(tgMessage);
-
         }
         break;
 
@@ -997,12 +914,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
         if (event->topic_len > 0)
         {
-            char *topic = (char *)calloc(event->topic_len + 1, sizeof(char));
-            char *data = (char *)calloc(event->data_len + 1, sizeof(char));
-
-            // Копируем топик и данные в буферы
-            memcpy(topic, event->topic, event->topic_len);
-            memcpy(data, event->data, event->data_len);
+            char *topic = _stringl(event->topic, event->topic_len);
+            char *data = _stringl(event->data, event->data_len);
 
             printf("topic= %s\n", topic);
             printf("data= %s\n", data);
@@ -1015,7 +928,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     ESP_LOGW(tag, "Get status topic received");
 
                     // Публикуем топик статуса
-                    char *str = mqttStatusJson(_status);
+                    char *str = mqttStatusJson();
                     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
                     free(str);
                 }
@@ -1024,61 +937,59 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             // Топик добавления таймера при закате
             if (!strcmp(topic, mqttTopicAddSunrise))
             {
-                _status.on_sunrise = 1;
-                //_status.shade_sunrise = atoi(data);
-                _status.shade_sunrise = strtol(data, NULL, 10);
-                ESP_LOGW(tag, "Add sunrise topic received. Set shade on sunrise: %d", _status.shade_sunrise);
+                move_on_sunrise = 1;
+                shade_sunrise = strtol(data, NULL, 10);
+                ESP_LOGW(tag, "Add sunrise topic received. Set shade on sunrise: %d", shade_sunrise);
 
                 // Публикуем топик статуса
-                char *str = mqttStatusJson(_status);
+                char *str = mqttStatusJson();
                 mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
                 free(str);
 
-                nvs_write_u8("shade_sunrise", _status.shade_sunrise);
-                nvs_write_u8("on_sunrise", _status.on_sunrise);
+                nvs_write_u8("shade_sunrise", shade_sunrise);
+                nvs_write_u8("on_sunrise", move_on_sunrise);
             }
 
             // Топик добавления таймера при восходе
             if (!strcmp(topic, mqttTopicAddSunset))
             {
-                _status.on_sunset = 1;
-                //_status.shade_sunset = atoi(data);
-                _status.shade_sunset = strtol(data, NULL, 10);
-                ESP_LOGW(tag, "Add sunset topic received. Set shade on sunset: %d", _status.shade_sunset);
+                move_on_sunset = 1;
+                shade_sunset = strtol(data, NULL, 10);
+                ESP_LOGW(tag, "Add sunset topic received. Set shade on sunset: %d", shade_sunset);
 
                 // Публикуем топик статуса
-                char *str = mqttStatusJson(_status);
+                char *str = mqttStatusJson();
                 mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
                 free(str);
 
-                nvs_write_u8("shade_sunset", _status.shade_sunset);
-                nvs_write_u8("on_sunset", _status.on_sunset);
+                nvs_write_u8("shade_sunset", shade_sunset);
+                nvs_write_u8("on_sunset", move_on_sunset);
             }
 
             // Топик удаления таймера при закате
             if (!strcmp(topic, mqttTopicDelSunrise))
             {
-                _status.on_sunrise = 0;
+                move_on_sunrise = 0;
                 ESP_LOGW(tag, "Delete sunrise topic received");
 
                 // Публикуем топик статуса
-                char *str = mqttStatusJson(_status);
+                char *str = mqttStatusJson();
                 mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
                 free(str);
-                nvs_write_u8("on_sunrise", _status.on_sunrise);
+                nvs_write_u8("on_sunrise", move_on_sunrise);
             }
 
             // Топик удаления таймера при восходе
             if (!strcmp(topic, mqttTopicDelSunset))
             {
-                _status.on_sunset = 0;
+                move_on_sunset = 0;
                 ESP_LOGW(tag, "Delete sunset topic received");
 
                 // Публикуем топик статуса
-                char *str = mqttStatusJson(_status);
+                char *str = mqttStatusJson();
                 mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
                 free(str);
-                nvs_write_u8("on_sunset", _status.on_sunset);
+                nvs_write_u8("on_sunset", move_on_sunset);
             }
 
             // Топик управления устройством
@@ -1110,7 +1021,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         ESP_LOGW(tag, "Get system data topic received");
 
                         // Публикуем системный топик
-                        char *str = mqttSystemJson(_system);
+                        char *str = mqttSystemJson();
                         mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
                         free(str);
                     }
@@ -1141,37 +1052,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 }
             }
 
-            // Топик изменения параметра max_steps
-            if (!strcmp(topic, mqttTopicSystemMaxSteps))
-            {
-                if (event->data_len > 0)
-                {
-                    uint16_t val = strtol(data, NULL, 10);
-
-                    ESP_LOGW(tag, "Set new max_steps parameter topic received: %s", data);
-                    if (val > 0)
-                    {
-                        _system.max_steps = val;
-
-                        // Сохраняем новое значение
-                        nvs_write_u16("max_steps", _system.max_steps);
-
-                        // Публикуем системный топик
-                        char *str = mqttSystemJson(_system);
-                        mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
-                        free(str);
-                    }
-                    else
-                    {
-                        ESP_LOGE(tag, "New max_steps parameter failed");
-                    }
-                }
-                else
-                {
-                    ESP_LOGE(tag, "data_len error");
-                }
-            }
-
             // Топик изменения ключа OpenWeatherMap api
             if (!strcmp(topic, mqttTopicSystemOWKey))
             {
@@ -1179,12 +1059,12 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    _system.ow_key = _string(data);
+                    ow_key = _string(data);
                     // Сохраняем новое значение
-                    nvs_write_str("ow_key", _system.ow_key);
+                    nvs_write_str("ow_key", ow_key);
 
                     // Публикуем системный топик
-                    char *str = mqttSystemJson(_system);
+                    char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
                     free(str);
                 }
@@ -1201,12 +1081,12 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    _system.tg_key = _string(data);
+                    tg_key = _string(data);
                     // Сохраняем новое значение
-                    nvs_write_str("tg_key", _system.tg_key);
+                    nvs_write_str("tg_key", tg_key);
 
                     // Публикуем системный топик
-                    char *str = mqttSystemJson(_system);
+                    char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
                     free(str);
                 }
@@ -1241,28 +1121,28 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             {
                                 str = malloc(size);
                                 err = nvs_get_str(nvs_handle, "update_url", str, &size);
-                                _system.update_url = _string(str);
-                                ESP_LOGI(tag, "Last updade url reading success: %s", _system.update_url);
+                                update_url = _string(str);
+                                ESP_LOGI(tag, "Last updade url reading success: %s", update_url);
                             }
                         }
                         else
                         {
-                            _system.update_url = _string(UPDATE_URL);
-                            ESP_LOGW(tag, "Last update url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.update_url);
+                            update_url = _string(UPDATE_URL);
+                            ESP_LOGW(tag, "Last update url reading error (%s). Set default url: %s", esp_err_to_name(err), update_url);
                         }
                         nvs_close(nvs_handle);
                     }
                     else
                     {
-                        _system.update_url = _string(data);
+                        update_url = _string(data);
                     }
 
                     // Проверяем заголовок, если начинается с https:// то все норм
                     // иначе отправляем системный топик с invalid_url
-                    if (!strncmp(_system.update_url, header, strlen(header)))
+                    if (!strncmp(update_url, header, strlen(header)))
                     {
                         // Публикуем системный топик
-                        char *str = mqttSystemJson(_system);
+                        char *str = mqttSystemJson();
                         mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
                         free(str);
 
@@ -1275,9 +1155,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     else
                     {
                         ESP_LOGE(tag, "Invalid url");
-                        _system.update_url = _string("invalid_url");
+                        update_url = _string("invalid_url");
                         //  Публикуем системный топик
-                        char *str = mqttSystemJson(_system);
+                        char *str = mqttSystemJson();
                         mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
                         free(str);
                     }
@@ -1294,13 +1174,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Set new server time topic received: %s", data);
                 if (event->data_len > 0)
                 {
-                    _system.time_server1 = _string(data);
+                    time_server1 = _string(data);
 
                     // Сохрапняем в nvs
-                    nvs_write_str("server_time1", _system.time_server1);
+                    nvs_write_str("server_time1", time_server1);
 
                     // Публикуем системный топик
-                    char *str = mqttSystemJson(_system);
+                    char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
                     free(str);
                 }
@@ -1316,13 +1196,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Set new server time topic received: %s", data);
                 if (event->data_len > 0)
                 {
-                    _system.time_server2 = _string(data);
+                    time_server2 = _string(data);
 
                     // Сохраняем в nvs
-                    nvs_write_str("server_time2", _system.time_server2);
+                    nvs_write_str("server_time2", time_server2);
 
                     // Публикуем системный топик
-                    char *str = mqttSystemJson(_system);
+                    char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
                     free(str);
                 }
@@ -1339,13 +1219,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    _system.timezone = _string(data);
+                    timezone = _string(data);
 
                     // Сохраняем в nvs
-                    nvs_write_str("timezone", _system.timezone);
+                    nvs_write_str("timezone", timezone);
 
                     // Публикуем системный топик
-                    char *str = mqttSystemJson(_system);
+                    char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
                     free(str);
                 }
@@ -1362,13 +1242,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    _system.city = _string(data);
+                    city = _string(data);
 
                     // Сохраняем в nvs
-                    nvs_write_str("city", _system.city);
+                    nvs_write_str("city", city);
 
                     // Публикуем системный топик
-                    char *str = mqttSystemJson(_system);
+                    char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
                     free(str);
                 }
@@ -1384,13 +1264,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 ESP_LOGW(tag, "Set new country topic received: %s", data);
                 if (event->data_len > 0)
                 {
-                    _system.country = _string(data);
+                    country = _string(data);
 
                     // Сохраняем в nvs
-                    nvs_write_str("country", _system.country);
+                    nvs_write_str("country", country);
 
                     // Публикуем системный топик
-                    char *str = mqttSystemJson(_system);
+                    char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
                     free(str);
                 }
@@ -1480,11 +1360,11 @@ static void sc_event_handler(void *arg, esp_event_base_t event_base, int32_t eve
                 memcpy(wifi_config.sta.bssid, evt->bssid, sizeof(wifi_config.sta.bssid));
             }
 
-            memcpy(_system.ssid, evt->ssid, sizeof(_system.ssid));
-            memcpy(_system.password, evt->password, sizeof(_system.password));
-            nvs_write_str("ssid", _system.ssid);
-            nvs_write_str("pass", _system.password);
-            ESP_LOGI(tag, "Smartconfig got SSID and password. SSID: %s Pass: %s", _system.ssid, _system.password);
+            memcpy(ssid, evt->ssid, sizeof(ssid));
+            memcpy(password, evt->password, sizeof(password));
+            nvs_write_str("ssid", ssid);
+            nvs_write_str("pass", password);
+            ESP_LOGI(tag, "Smartconfig got SSID and password. SSID: %s Pass: %s", ssid, password);
             ssid_loaded = true;
             password_loaded = true;
 
@@ -1599,24 +1479,27 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
         cJSON *sys = cJSON_GetObjectItemCaseSensitive(str, "sys");
 
         // Читаем timezone, sunset, sunrise в UNIX формате
-        _status.sunrise_time_unix = cJSON_GetObjectItemCaseSensitive(sys, "sunrise")->valueint;
-        _status.sunset_time_unix = cJSON_GetObjectItemCaseSensitive(sys, "sunset")->valueint;
+        sunrise_time = cJSON_GetObjectItemCaseSensitive(sys, "sunrise")->valueint;
+        sunset_time = cJSON_GetObjectItemCaseSensitive(sys, "sunset")->valueint;
 
-        // Переводим из UNIX формата в читаемый
-        tm_sunrise = localtime(&_status.sunrise_time_unix);
-        strftime(_status.sunrise_time, sizeof(_status.sunrise_time), "%H:%M:%S", tm_sunrise);
-        ESP_LOGI(tag, "Time sunrise: %s", _status.sunrise_time);
+        if (sunrise != NULL)
+            vPortFree(sunrise);
+        sunrise = _timestr("%H:%M:%S", sunrise_time, 32);
+        ESP_LOGI(tag, "Time sunrise: %s", sunrise);
 
-        tm_sunset = localtime(&_status.sunset_time_unix);
-        strftime(_status.sunset_time, sizeof(_status.sunset_time), "%H:%M:%S", tm_sunset);
-        ESP_LOGI(tag, "Time sunset: %s", _status.sunset_time);
+        if (sunset != NULL)
+            vPortFree(sunset);
+        sunset = _timestr("%H:%M:%S", sunset_time, 32);
+        ESP_LOGI(tag, "Time sunset: %s", sunset);
 
-        if(_status.last_ow_updated != NULL) free(_status.last_ow_updated);
-        _status.last_ow_updated = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
-        ESP_LOGI(tag, "Last sunrise/sunset updated: %s", _status.last_ow_updated);
+        if (last_ow_updated != NULL)
+            vPortFree(last_ow_updated);
+        last_ow_updated = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
+
+        ESP_LOGI(tag, "Last sunrise/sunset updated: %s", last_ow_updated);
 
         cJSON_Delete(str);
-        free(ow_data);
+        vPortFree(ow_data);
 
         break;
 
@@ -1631,23 +1514,19 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 static void openweather_task(void *param)
 {
     const char *tag = "openweather_task";
-    char url[200];
 
     while (1)
     {
         if (time_sync)
         {
-            memset(url, 0, sizeof(url));
-            snprintf(url,
-                     sizeof(url),
-                     "%s%s%s%s%s%s%s",
-                     "http://api.openweathermap.org/data/2.5/weather?q=",
-                     _system.city,
-                     ",",
-                     _system.country,
-                     "&units=metric",
-                     "&APPID=",
-                     _system.ow_key);
+            char *url = _stringf("%s%s%s%s%s%s%s",
+                                 "http://api.openweathermap.org/data/2.5/weather?q=",
+                                 city,
+                                 ",",
+                                 country,
+                                 "&units=metric",
+                                 "&APPID=",
+                                 ow_key);
 
             esp_http_client_config_t config = {
                 .url = url,
@@ -1657,35 +1536,34 @@ static void openweather_task(void *param)
             ESP_LOGI(tag, "Task started from url: %s", config.url);
 
             esp_http_client_handle_t client = esp_http_client_init(&config);
-            if (client != NULL)
-            {
-                esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
 
-                esp_err_t err = esp_http_client_perform(client);
-                if (err == ESP_OK)
+            esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+
+            esp_err_t err = esp_http_client_perform(client);
+            if (err == ESP_OK)
+            {
+                int status_code = esp_http_client_get_status_code(client);
+                if (status_code == HttpStatus_Ok)
                 {
-                    int status_code = esp_http_client_get_status_code(client);
-                    if (status_code == HttpStatus_Ok)
-                    {
-                        ESP_LOGI(tag, "Status code success: %d", status_code);
-                        ow_data = malloc(sizeof(char));
-                        ow_len = 0;
-                    }
-                    else if (status_code == HttpStatus_Forbidden)
-                    {
-                        ESP_LOGE(tag, "Failed to send message, too many messages, please wait");
-                    }
-                    else
-                    {
-                        ESP_LOGE(tag, "Status code error: %d", status_code);
-                    }
+                    ESP_LOGI(tag, "Status code success: %d", status_code);
+                    ow_data = malloc(sizeof(char));
+                    ow_len = 0;
+                }
+                else if (status_code == HttpStatus_Forbidden)
+                {
+                    ESP_LOGE(tag, "Failed to send message, too many messages, please wait");
                 }
                 else
                 {
-                    ESP_LOGE(tag, "Perform %s Request Error: %s", config.url, esp_err_to_name(err));
+                    ESP_LOGE(tag, "Status code error: %d", status_code);
                 }
-                esp_http_client_cleanup(client);
             }
+            else
+            {
+                ESP_LOGE(tag, "Perform %s Request Error: %s", config.url, esp_err_to_name(err));
+            }
+            esp_http_client_cleanup(client);
+            vPortFree(url);
         }
         vTaskDelay(pdMS_TO_TICKS(600000));
     }
@@ -1776,7 +1654,7 @@ static void ota_task(void *param)
 
     esp_wifi_set_ps(WIFI_PS_NONE);
     esp_http_client_config_t config = {
-        .url = _system.update_url,
+        .url = update_url,
         .use_global_ca_store = false,
         .crt_bundle_attach = esp_crt_bundle_attach,
 
@@ -1795,7 +1673,7 @@ static void ota_task(void *param)
     {
         ESP_LOGE(tag, "ESP HTTPS OTA Begin failed");
         esp_restart();
-   }
+    }
 
     esp_app_desc_t app_desc;
     err = esp_https_ota_get_img_desc(https_ota_handle, &app_desc);
@@ -1804,7 +1682,7 @@ static void ota_task(void *param)
         ESP_LOGE(tag, "esp_https_ota_read_img_desc failed");
         esp_restart();
     }
-    
+
     err = validate_image_header(&app_desc);
     if (err != ESP_OK)
     {
@@ -1838,19 +1716,14 @@ static void ota_task(void *param)
             ESP_LOGI(tag, "ESP_HTTPS_OTA upgrade successful. Rebooting ...");
 
             // Получаем время последнего обновления и сохраняем в nvs
-            time_t now;
-            time(&now);
-            //tm_now = localtime(&now);
-            //strftime(_system.last_updated, sizeof(_system.last_updated), "%d.%m.%Y %H:%M:%S", tm_now);
-            
-            _system.last_updated = _timestr("%d.%m.%Y %H:%M:%S", now, 16);
-            ESP_LOGI(tag, "Last updated: %s", _system.last_updated);
+            last_updated = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
+            ESP_LOGI(tag, "Last updated: %s", last_updated);
 
             // Сохраняем новое значение
-            nvs_write_str("last_updated", _system.last_updated);
+            nvs_write_str("last_updated", last_updated);
 
             // Сохраняем url обновления
-            nvs_write_str("update_url", _system.update_url);
+            nvs_write_str("update_url", update_url);
 
             vTaskDelay(pdMS_TO_TICKS(2000));
             esp_restart();
@@ -1881,42 +1754,42 @@ static void move_task(void *param)
     char *tag = "sm_move_task";
     int dir = 0;
 
-    _status.target_pos = (int)(_status.length * _status.shade / 100.0);
+    target_pos = (int)(length * shade / 100.0);
 
-    if (_status.current_pos < _status.target_pos)
+    if (current_pos < target_pos)
     {
         // Направление движения - вниз (закрытие)
-        strcpy(_status.move_status, "closing");
+        strcpy(move_status, "closing");
         gpio_set_level(SM_DIR, 1);
         // Разрешаем вращение
         gpio_set_level(SM_nEN, 0);
         dir = 1;
-        ESP_LOGI(tag, "SM move started: (%s) to target: %d", _status.move_status, _status.target_pos);
+        ESP_LOGI(tag, "SM move started: (%s) to target: %d", move_status, target_pos);
     }
-    if (_status.current_pos > _status.target_pos)
+    if (current_pos > target_pos)
     {
         // Направление движения - вверх (открытие)
-        strcpy(_status.move_status, "opening");
+        strcpy(move_status, "opening");
         gpio_set_level(SM_DIR, 0);
         // Разрешаем вращение
         gpio_set_level(SM_nEN, 0);
         dir = 2;
-        ESP_LOGI(tag, "SM move started: (%s) to target: %d", _status.move_status, _status.target_pos);
+        ESP_LOGI(tag, "SM move started: (%s) to target: %d", move_status, target_pos);
     }
-    if (_status.current_pos == _status.target_pos)
+    if (current_pos == target_pos)
     {
         // Положение установлено
-        strcpy(_status.move_status, "stopped");
+        strcpy(move_status, "stopped");
         dir = 0;
         // Запрещаем вращение
         gpio_set_level(SM_nEN, 1);
-        ESP_LOGI(tag, "SM on target: %d", _status.target_pos);
+        ESP_LOGI(tag, "SM on target: %d", target_pos);
     }
 
     tgMessage = (char *)malloc(50 * sizeof(char));
     strcpy(tgMessage, mqttHostname);
     strcat(tgMessage, "_");
-    strcat(tgMessage, _status.move_status);
+    strcat(tgMessage, move_status);
 
     send_telegram_message(tgMessage);
     // free(tgMessage);
@@ -1924,21 +1797,21 @@ static void move_task(void *param)
     if (dir != 0)
     {
         // Сигналы вращения и индикации
-        while (_status.current_pos < _system.max_steps)
+        while (1)
         {
             if (dir == 1)
-                _status.current_pos++;
+                current_pos++;
             if (dir == 2)
-                _status.current_pos--;
-            if (_status.current_pos <= 0)
-                _status.current_pos = 0;
+                current_pos--;
+            if (current_pos <= 0)
+                current_pos = 0;
 
             gpio_set_level(SM_STEP, 1);
             ets_delay_us(1000);
             gpio_set_level(SM_STEP, 0);
             ets_delay_us(1000);
 
-            if (_status.current_pos == _status.target_pos)
+            if (current_pos == target_pos)
                 break;
         }
 
@@ -1947,19 +1820,19 @@ static void move_task(void *param)
         ESP_LOGI(tag, "task stopped");
     }
 
-    strcpy(_status.move_status, "stopped");
-    nvs_write_u16("current_pos", _status.current_pos);
-    nvs_write_u16("target_pos", _status.target_pos);
+    strcpy(move_status, "stopped");
+    nvs_write_u16("current_pos", current_pos);
+    nvs_write_u16("target_pos", target_pos);
 
     // Публикуем топик статуса
-    char *str = mqttStatusJson(_status);
+    char *str = mqttStatusJson();
     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
     free(str);
 
     tgMessage = (char *)malloc(50 * sizeof(char));
     strcpy(tgMessage, mqttHostname);
     strcat(tgMessage, "_");
-    strcat(tgMessage, _status.move_status);
+    strcat(tgMessage, move_status);
 
     send_telegram_message(tgMessage);
     // free(tgMessage);
@@ -1980,7 +1853,7 @@ static void calibrate_task(void *param)
     gpio_set_level(SM_DIR, 1);
 
     // Сигналы вращения
-    while (calibrateCnt < _system.max_steps)
+    while (1)
     {
         calibrateCnt++;
 
@@ -1992,11 +1865,11 @@ static void calibrate_task(void *param)
     // Снимаем сигнал разрешения
     gpio_set_level(SM_nEN, 1);
     ESP_LOGE(tag, "Task stopped. System is not calibrated. Stepout: %d steps", calibrateCnt);
-    _status.cal_status = 0;
-    strcpy(_status.move_status, "stopped");
+    calibrate = 0;
+    strcpy(move_status, "stopped");
 
     // Публикуем топик статуса
-    char *str = mqttStatusJson(_status);
+    char *str = mqttStatusJson();
     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
     free(str);
 
@@ -2186,8 +2059,8 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &handler_on_wifi_connect, NULL));
 
     // Переводим ESP в режим STA и запускаем WiFi
-    memcpy(wifi_config.sta.password, _system.password, password_size);
-    memcpy(wifi_config.sta.ssid, _system.ssid, ssid_size);
+    memcpy(wifi_config.sta.password, password, password_size);
+    memcpy(wifi_config.sta.ssid, ssid, ssid_size);
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -2199,52 +2072,44 @@ static void timer1_cb(TimerHandle_t pxTimer)
 {
     const char *tag = "timer_1";
 
-    _status.working_time++;
+    working_time++;
 
     if (time_sync)
     {
         wating_to_time_sync = 0;
 
         // Получаем текущую дату и время и записываем в структуру статуса
-         time_t now;
-         time(&now);
-         tm_now = localtime(&now);
-         if (tm_now != NULL)
-         {
-            // Преобразуем текущую дату в читаемый вид
-            
-            if(_status.current_time != NULL) free(_status.current_time);
-            _status.current_time = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
-            // Запоминаем время запуска
-            if (!isStarted)
-            {
-                if(_status.last_started != NULL) free(_status.last_started);
-                _status.last_started = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
-                isStarted = true;
-            }
+        time_t now;
+        time(&now);
 
-            // Выводим данные в консоль
-            printf("\rSystem is active. Time now %s Working time %lld sec. Free heap %0.1f %%", _status.current_time, _status.working_time, esp_heap_free_percent());
-            fflush(stdout);
-
-            // Запускаем MQTT
-            if (!mqttConnected)
-                mqtt_start();
-
-            if (_status.on_sunrise == 1 && now == _status.sunrise_time_unix)
-            {
-                _status.shade = _status.shade_sunrise;
-                xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
-            }
-            if (_status.on_sunset == 1 && now == _status.sunset_time_unix)
-            {
-                _status.shade = _status.shade_sunset;
-                xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
-            }
-        }
-        else
+        // Запоминаем время запуска
+        if (!isStarted)
         {
-            ESP_LOGE(tag, "NULL pointer");
+            if (last_started != NULL)
+                vPortFree(last_started);
+            last_started = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
+            isStarted = true;
+        }
+
+        // Выводим данные в консоль
+        char *str = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
+        printf("\rSystem is active. Time now %s Working time %lld sec. Free heap %0.1f %%", str, working_time, esp_heap_free_percent());
+        fflush(stdout);
+        vPortFree(str);
+
+        // Запускаем MQTT
+        if (!mqttConnected)
+            mqtt_start();
+
+        if (move_on_sunrise == 1 && now == sunrise_time)
+        {
+            shade = shade_sunrise;
+            xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
+        }
+        if (move_on_sunset == 1 && now == sunset_time)
+        {
+            shade = shade_sunset;
+            xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
         }
     }
     else
@@ -2309,9 +2174,9 @@ void app_main(void)
         err = nvs_get_str(nvs_handle, "ssid", NULL, &ssid_size);
         if (err == ESP_OK)
         {
-            _system.ssid = malloc(ssid_size);
-            err = nvs_get_str(nvs_handle, "ssid", _system.ssid, &ssid_size);
-            ESP_LOGI(tag, "SSID reading success: %s", _system.ssid);
+            ssid = malloc(ssid_size);
+            err = nvs_get_str(nvs_handle, "ssid", ssid, &ssid_size);
+            ESP_LOGI(tag, "SSID reading success: %s", ssid);
             ssid_loaded = true;
         }
         else
@@ -2324,9 +2189,9 @@ void app_main(void)
         err = nvs_get_str(nvs_handle, "pass", NULL, &password_size);
         if (err == ESP_OK)
         {
-            _system.password = malloc(password_size);
-            err = nvs_get_str(nvs_handle, "pass", _system.password, &password_size);
-            ESP_LOGI(tag, "Password reading success: %s", _system.password);
+            password = malloc(password_size);
+            err = nvs_get_str(nvs_handle, "pass", password, &password_size);
+            ESP_LOGI(tag, "Password reading success: %s", password);
             password_loaded = true;
         }
         else
@@ -2341,109 +2206,97 @@ void app_main(void)
         err = nvs_get_u8(nvs_handle, "shade_sunset", &data8);
         if (err == ESP_OK)
         {
-            _status.shade_sunset = data8;
-            ESP_LOGI(tag, "Shade sunset read success: %d", _status.shade_sunset);
+            shade_sunset = data8;
+            ESP_LOGI(tag, "Shade sunset read success: %d", shade_sunset);
         }
         else
         {
-            _status.shade_sunset = 0;
-            ESP_LOGW(tag, "Shade sunset read error (%s). Set default value: %d", esp_err_to_name(err), _status.shade_sunset);
+            shade_sunset = 0;
+            ESP_LOGW(tag, "Shade sunset read error (%s). Set default value: %d", esp_err_to_name(err), shade_sunset);
         }
         /* Читаем флаг при восходе */
         err = nvs_get_u8(nvs_handle, "on_sunset", &data8);
         if (err == ESP_OK)
         {
-            _status.on_sunset = data8;
-            ESP_LOGI(tag, "Shade flag on sunset read success: %d", _status.on_sunset);
+            move_on_sunset = data8;
+            ESP_LOGI(tag, "Shade flag on sunset read success: %d", move_on_sunset);
         }
         else
         {
-            _status.on_sunset = 0;
-            ESP_LOGW(tag, "Shade flag on sunset read error (%s). Set default value: %d", esp_err_to_name(err), _status.on_sunset);
+            move_on_sunset = 0;
+            ESP_LOGW(tag, "Shade flag on sunset read error (%s). Set default value: %d", esp_err_to_name(err), move_on_sunset);
         }
         /* Читаем процент затемнения при закате */
         err = nvs_get_u8(nvs_handle, "shade_sunrise", &data8);
         if (err == ESP_OK)
         {
-            _status.shade_sunrise = data8;
-            ESP_LOGI(tag, "Shade sunrise read success: %d", _status.shade_sunrise);
+            shade_sunrise = data8;
+            ESP_LOGI(tag, "Shade sunrise read success: %d", shade_sunrise);
         }
         else
         {
-            _status.shade_sunrise = 0;
-            ESP_LOGW(tag, "Shade sunrise read error (%s). Set default value: %d", esp_err_to_name(err), _status.shade_sunrise);
+            shade_sunrise = 0;
+            ESP_LOGW(tag, "Shade sunrise read error (%s). Set default value: %d", esp_err_to_name(err), shade_sunrise);
         }
         /* Читаем флаг при закате */
         err = nvs_get_u8(nvs_handle, "on_sunrise", &data8);
         if (err == ESP_OK)
         {
-            _status.on_sunrise = data8;
-            ESP_LOGI(tag, "Shade flag on sunrise read success: %d", _status.on_sunset);
+            move_on_sunrise = data8;
+            ESP_LOGI(tag, "Shade flag on sunrise read success: %d", move_on_sunset);
         }
         else
         {
-            _status.on_sunrise = 0;
-            ESP_LOGW(tag, "Shade flag on sunrise read error (%s). Set default value: %d", esp_err_to_name(err), _status.on_sunrise);
+            move_on_sunrise = 0;
+            ESP_LOGW(tag, "Shade flag on sunrise read error (%s). Set default value: %d", esp_err_to_name(err), move_on_sunrise);
         }
         /* Читаем статус калибровки */
         err = nvs_get_u8(nvs_handle, "cal_status", &data8);
         if (err == ESP_OK)
         {
-            _status.cal_status = data8;
-            ESP_LOGI(tag, "Calibrate status read success: %d", _status.cal_status);
+            calibrate = data8;
+            ESP_LOGI(tag, "Calibrate status read success: %d", calibrate);
         }
         else
         {
-            _status.cal_status = 0;
-            ESP_LOGW(tag, "Calibrate status read error (%s). Set default value: %d", esp_err_to_name(err), _status.shade_sunrise);
+            calibrate = 0;
+            ESP_LOGW(tag, "Calibrate status read error (%s). Set default value: %d", esp_err_to_name(err), calibrate);
         }
         /* Читаем длину шторы */
         err = nvs_get_u16(nvs_handle, "length", &data16);
         if (err == ESP_OK)
         {
-            _status.length = data16;
-            ESP_LOGI(tag, "Shade length read success: %d", _status.length);
+            length = data16;
+            ESP_LOGI(tag, "Shade length read success: %d", length);
         }
         else
         {
-            _status.length = 0;
-            ESP_LOGW(tag, "Shade length read error (%s). Set default value: %d", esp_err_to_name(err), _status.length);
+            length = 0;
+            ESP_LOGW(tag, "Shade length read error (%s). Set default value: %d", esp_err_to_name(err), length);
         }
         /* Читаем последнее сохраненное текущее положение */
         err = nvs_get_u16(nvs_handle, "current_pos", &data16);
         if (err == ESP_OK)
         {
-            _status.current_pos = data16;
-            ESP_LOGI(tag, "Current position read success: %d", _status.current_pos);
+            current_pos = data16;
+            ESP_LOGI(tag, "Current position read success: %d", current_pos);
         }
         else
         {
-            _status.current_pos = 0;
-            ESP_LOGW(tag, "Current position read error (%s). Set default value: %d", esp_err_to_name(err), _status.current_pos);
+            current_pos = 0;
+            ESP_LOGW(tag, "Current position read error (%s). Set default value: %d", esp_err_to_name(err), current_pos);
         }
         /* Читаем последнее сохраненное целевое положение */
         err = nvs_get_u16(nvs_handle, "target_pos", &data16);
         if (err == ESP_OK)
         {
-            _status.target_pos = data16;
-            ESP_LOGI(tag, "Target position read success: %d", _status.target_pos);
+            target_pos = data16;
+            ESP_LOGI(tag, "Target position read success: %d", target_pos);
         }
         else
         {
-            _status.target_pos = 0;
-            ESP_LOGW(tag, "Target position read error (%s). Set default value: %d", esp_err_to_name(err), _status.target_pos);
-        }
-        // Читаем параметр max_steps
-        err = nvs_get_u16(nvs_handle, "max_steps", &data16);
-        if (err == ESP_OK)
-        {
-            _system.max_steps = data16;
-            ESP_LOGI(tag, "Max steps parameter read success: %d", _system.max_steps);
-        }
-        else
-        {
-            _system.max_steps = DEFAULT_MAX_STEPS;
-            ESP_LOGW(tag, "Max steps parameter read error (%s). Set default value: %d", esp_err_to_name(err), _system.max_steps);
+            target_pos = 0;
+            ESP_LOGW(tag, "Target position read error (%s). Set default value: %d", esp_err_to_name(err), target_pos);
         }
         // Читаем OpenWeatherMap api key
         err = nvs_get_str(nvs_handle, "ow_key", NULL, &size);
@@ -2451,13 +2304,13 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "ow_key", str, &size);
-            _system.ow_key = _string(str);  
-            ESP_LOGI(tag, "Openweather api key reading success: %s", _system.ow_key);
+            ow_key = _string(str);
+            ESP_LOGI(tag, "Openweather api key reading success: %s", ow_key);
         }
         else
         {
-            _system.ow_key = _string(OPEN_WEATHER_MAP_TOKEN);
-            ESP_LOGW(tag, "Openweather api key reading error (%s). Set default key: %s", esp_err_to_name(err), _system.ow_key);
+            ow_key = _string(OPEN_WEATHER_MAP_TOKEN);
+            ESP_LOGW(tag, "Openweather api key reading error (%s). Set default key: %s", esp_err_to_name(err), ow_key);
         }
         // Читаем Telegram api key
         err = nvs_get_str(nvs_handle, "tg_key", NULL, &size);
@@ -2465,13 +2318,13 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "tg_key", str, &size);
-            _system.tg_key = _string(str);
-            ESP_LOGI(tag, "Telegram api key reading success: %s", _system.tg_key);
+            tg_key = _string(str);
+            ESP_LOGI(tag, "Telegram api key reading success: %s", tg_key);
         }
         else
         {
-            _system.tg_key = _string(TELEGRAM_BOT_TOKEN);
-             ESP_LOGW(tag, "Telegram api key reading error (%s). Set default key: %s", esp_err_to_name(err), _system.tg_key);
+            tg_key = _string(TELEGRAM_BOT_TOKEN);
+            ESP_LOGW(tag, "Telegram api key reading error (%s). Set default key: %s", esp_err_to_name(err), tg_key);
         }
         // Читаем url сервера 1 синхронизации времени
         err = nvs_get_str(nvs_handle, "time_server1", NULL, &size);
@@ -2479,13 +2332,13 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "time_server1", str, &size);
-            _system.time_server1 = _string(str);
-            ESP_LOGI(tag, "Time server 1 reading success: %s", _system.time_server1);
+            time_server1 = _string(str);
+            ESP_LOGI(tag, "Time server 1 reading success: %s", time_server1);
         }
         else
         {
-            _system.time_server1 = _string(TIME_SERVER1);
-            ESP_LOGW(tag, "Time server 1 url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.time_server1);
+            time_server1 = _string(TIME_SERVER1);
+            ESP_LOGW(tag, "Time server 1 url reading error (%s). Set default url: %s", esp_err_to_name(err), time_server1);
         }
         // Читаем url сервера 2 синхронизации времени
         err = nvs_get_str(nvs_handle, "time_server2", NULL, &size);
@@ -2493,13 +2346,13 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "time_server2", str, &size);
-            _system.time_server2 = _string(str);
-            ESP_LOGI(tag, "Time server 2 reading success: %s", _system.time_server2);
+            time_server2 = _string(str);
+            ESP_LOGI(tag, "Time server 2 reading success: %s", time_server2);
         }
         else
         {
-            _system.time_server2 = _string(TIME_SERVER2);
-            ESP_LOGW(tag, "Time server 2 url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.time_server2);
+            time_server2 = _string(TIME_SERVER2);
+            ESP_LOGW(tag, "Time server 2 url reading error (%s). Set default url: %s", esp_err_to_name(err), time_server2);
         }
         // Читаем timezone
         err = nvs_get_str(nvs_handle, "timezone", NULL, &size);
@@ -2507,13 +2360,13 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "timezone", str, &size);
-            _system.timezone  = _string(str);
-            ESP_LOGI(tag, "Timezone reading success: %s", _system.time_server2);
+            timezone = _string(str);
+            ESP_LOGI(tag, "Timezone reading success: %s", time_server2);
         }
         else
         {
-            _system.timezone = _string(TZ);
-            ESP_LOGW(tag, "Timezone reading error (%s). Set default tz: %s", esp_err_to_name(err), _system.timezone);
+            timezone = _string(TZ);
+            ESP_LOGW(tag, "Timezone reading error (%s). Set default tz: %s", esp_err_to_name(err), timezone);
         }
         // Читаем код страны
         err = nvs_get_str(nvs_handle, "country", NULL, &size);
@@ -2521,13 +2374,13 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "country", str, &size);
-            _system.country = _string(str);
-            ESP_LOGI(tag, "Country code reading success: %s", _system.country);
+            country = _string(str);
+            ESP_LOGI(tag, "Country code reading success: %s", country);
         }
         else
         {
-            _system.country = _string(COUNTRY);
-            ESP_LOGW(tag, "Country code reading error (%s). Set default country: %s", esp_err_to_name(err), _system.country);
+            country = _string(COUNTRY);
+            ESP_LOGW(tag, "Country code reading error (%s). Set default country: %s", esp_err_to_name(err), country);
         }
         // Читаем код города
         err = nvs_get_str(nvs_handle, "city", NULL, &size);
@@ -2535,13 +2388,13 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "city", str, &size);
-            _system.city = _string(str);
-            ESP_LOGI(tag, "City code reading success: %s", _system.city);
+            city = _string(str);
+            ESP_LOGI(tag, "City code reading success: %s", city);
         }
         else
         {
-            _system.city = _string(CITY);
-            ESP_LOGW(tag, "City code reading error (%s). Set default city: %s", esp_err_to_name(err), _system.city);
+            city = _string(CITY);
+            ESP_LOGW(tag, "City code reading error (%s). Set default city: %s", esp_err_to_name(err), city);
         }
         // Читаем время последнего обновления системы
         err = nvs_get_str(nvs_handle, "last_updated", NULL, &size);
@@ -2549,13 +2402,13 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "last_updated", str, &size);
-            _system.last_updated = _string(str);
-            ESP_LOGI(tag, "Last updated time reading success: %s", _system.last_updated);
+            last_updated = _string(str);
+            ESP_LOGI(tag, "Last updated time reading success: %s", last_updated);
         }
         else
         {
-            _system.last_updated = _string("no_updates");
-            ESP_LOGW(tag, "Last updated time reading error (%s). Set default time: %s", esp_err_to_name(err), _system.last_updated);
+            last_updated = _string("no_updates");
+            ESP_LOGW(tag, "Last updated time reading error (%s). Set default time: %s", esp_err_to_name(err), last_updated);
         }
         // Читаем url последнего обновления системы
         err = nvs_get_str(nvs_handle, "update_url", NULL, &size);
@@ -2563,13 +2416,13 @@ void app_main(void)
         {
             str = malloc(size);
             err = nvs_get_str(nvs_handle, "update_url", str, &size);
-            _system.update_url = _string(str);
-            ESP_LOGI(tag, "Last updade url reading success: %s", _system.update_url);
+            update_url = _string(str);
+            ESP_LOGI(tag, "Last updade url reading success: %s", update_url);
         }
         else
         {
-            _system.update_url = _string(UPDATE_URL);
-            ESP_LOGW(tag, "Last update url reading error (%s). Set default url: %s", esp_err_to_name(err), _system.update_url);
+            update_url = _string(UPDATE_URL);
+            ESP_LOGW(tag, "Last update url reading error (%s). Set default url: %s", esp_err_to_name(err), update_url);
         }
 
         nvs_close(nvs_handle);
@@ -2577,10 +2430,10 @@ void app_main(void)
     else
     {
         ESP_LOGE(tag, "NVS storage open error (%s)", esp_err_to_name(err));
-        _status.shade_sunrise = 0;
-        _status.shade_sunset = 0;
-        _status.on_sunrise = 0;
-        _status.on_sunset = 0;
+        shade_sunrise = 0;
+        shade_sunset = 0;
+        move_on_sunrise = 0;
+        move_on_sunset = 0;
     }
 
     wifi_init();
