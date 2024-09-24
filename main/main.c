@@ -179,10 +179,6 @@ static size_t password_size = 0;
 
 static char *mqttHostname = NULL;
 
-static struct tm *tm_now;
-static struct tm *tm_sunset;
-static struct tm *tm_sunrise;
-
 static void mqtt_start(void);
 static void time_sync_start(const char *tz);
 static void time_sync_cb(struct timeval *tv);
@@ -465,7 +461,7 @@ static void onCalibrate()
     // Публикуем топик статуса
     char *str = mqttStatusJson();
     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-    free(str);
+    vPortFree(str);
     // Запускаем задачу калибровки
     xTaskCreate(calibrate_task, "calibrate_task", 4096, NULL, 3, &calibrate_task_handle);
 }
@@ -496,7 +492,7 @@ static void onStop()
         // Публикуем топик статуса
         char *str = mqttStatusJson();
         mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-        free(str);
+        vPortFree(str);
     }
     else if (!strcmp(move_status, "opening") || !strcmp(move_status, "closing"))
     {
@@ -511,7 +507,7 @@ static void onStop()
         // Публикуем топик статуса
         char *str = mqttStatusJson();
         mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-        free(str);
+        vPortFree(str);
     }
     else
     {
@@ -539,7 +535,7 @@ static void onShade(int shade)
     /// Публикуем топик статуса
     char *str = mqttStatusJson();
     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-    free(str);
+    vPortFree(str);
 }
 
 static void time_sync_start(const char *tz)
@@ -877,11 +873,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
             char *status = mqttStatusJson();
             mqttPublish(event->client, mqttTopicStatus, status, mqttTopicStatusQoS, mqttTopicStatusRet);
-            free(status);
+            vPortFree(status);
 
             char *system = mqttSystemJson();
             mqttPublish(event->client, mqttTopicSystem, system, mqttTopicSystemQoS, mqttTopicSystemRet);
-            free(system);
+            vPortFree(system);
 
             tgMessage = (char *)malloc(50 * sizeof(char));
             strcpy(tgMessage, mqttHostname);
@@ -930,7 +926,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     // Публикуем топик статуса
                     char *str = mqttStatusJson();
                     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-                    free(str);
+                    vPortFree(str);
                 }
             }
 
@@ -944,7 +940,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 // Публикуем топик статуса
                 char *str = mqttStatusJson();
                 mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-                free(str);
+                vPortFree(str);
 
                 nvs_write_u8("shade_sunrise", shade_sunrise);
                 nvs_write_u8("on_sunrise", move_on_sunrise);
@@ -960,7 +956,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 // Публикуем топик статуса
                 char *str = mqttStatusJson();
                 mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-                free(str);
+                vPortFree(str);
 
                 nvs_write_u8("shade_sunset", shade_sunset);
                 nvs_write_u8("on_sunset", move_on_sunset);
@@ -975,7 +971,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 // Публикуем топик статуса
                 char *str = mqttStatusJson();
                 mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-                free(str);
+                vPortFree(str);
                 nvs_write_u8("on_sunrise", move_on_sunrise);
             }
 
@@ -988,7 +984,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 // Публикуем топик статуса
                 char *str = mqttStatusJson();
                 mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-                free(str);
+                vPortFree(str);
                 nvs_write_u8("on_sunset", move_on_sunset);
             }
 
@@ -1023,7 +1019,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         // Публикуем системный топик
                         char *str = mqttSystemJson();
                         mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
-                        free(str);
+                        vPortFree(str);
                     }
 
                     // Запрос на перезагрузку
@@ -1066,7 +1062,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     // Публикуем системный топик
                     char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
-                    free(str);
+                    vPortFree(str);
                 }
                 else
                 {
@@ -1088,7 +1084,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     // Публикуем системный топик
                     char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
-                    free(str);
+                    vPortFree(str);
                 }
                 else
                 {
@@ -1144,7 +1140,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         // Публикуем системный топик
                         char *str = mqttSystemJson();
                         mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
-                        free(str);
+                        vPortFree(str);
 
                         // Все выключаем
                         xTimerStop(timer1_handle, 0);
@@ -1159,7 +1155,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                         //  Публикуем системный топик
                         char *str = mqttSystemJson();
                         mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
-                        free(str);
+                        vPortFree(str);
                     }
                 }
                 else
@@ -1182,7 +1178,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     // Публикуем системный топик
                     char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
-                    free(str);
+                    vPortFree(str);
                 }
                 else
                 {
@@ -1204,7 +1200,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     // Публикуем системный топик
                     char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
-                    free(str);
+                    vPortFree(str);
                 }
                 else
                 {
@@ -1227,7 +1223,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     // Публикуем системный топик
                     char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
-                    free(str);
+                    vPortFree(str);
                 }
                 else
                 {
@@ -1250,7 +1246,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     // Публикуем системный топик
                     char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
-                    free(str);
+                    vPortFree(str);
                 }
                 else
                 {
@@ -1272,7 +1268,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                     // Публикуем системный топик
                     char *str = mqttSystemJson();
                     mqttPublish(event->client, mqttTopicSystem, str, mqttTopicSystemQoS, mqttTopicSystemRet);
-                    free(str);
+                    vPortFree(str);
                 }
                 else
                 {
@@ -1792,7 +1788,6 @@ static void move_task(void *param)
     strcat(tgMessage, move_status);
 
     send_telegram_message(tgMessage);
-    // free(tgMessage);
 
     if (dir != 0)
     {
@@ -1827,15 +1822,13 @@ static void move_task(void *param)
     // Публикуем топик статуса
     char *str = mqttStatusJson();
     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-    free(str);
+    vPortFree(str);
 
     tgMessage = (char *)malloc(50 * sizeof(char));
     strcpy(tgMessage, mqttHostname);
     strcat(tgMessage, "_");
     strcat(tgMessage, move_status);
-
     send_telegram_message(tgMessage);
-    // free(tgMessage);
 
     vTaskDelete(NULL);
 }
@@ -1871,7 +1864,7 @@ static void calibrate_task(void *param)
     // Публикуем топик статуса
     char *str = mqttStatusJson();
     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-    free(str);
+    vPortFree(str);
 
     vTaskDelete(NULL);
 }
