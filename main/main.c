@@ -402,9 +402,8 @@ char *_timestr(const char *format, time_t value, int bufsize)
 static esp_err_t send_telegram_message(const char *message)
 {
     const char *tag = "send_telegram_message";
-    char url[512];
-    sprintf(url, "https://api.telegram.org/bot%s/sendMessage?chat_id=%s&text=%s", TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message);
-
+    char *url = _stringf("https://api.telegram.org/bot%s/sendMessage?chat_id=%s&text=%s", TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message);
+    
     esp_http_client_config_t config = {
         .url = url,
         .method = HTTP_METHOD_POST,
@@ -412,6 +411,8 @@ static esp_err_t send_telegram_message(const char *message)
         .cert_pem = (char *)tg_org_pem_start,
         .port = 443,
     };
+
+    vPortFree(url);
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL)
