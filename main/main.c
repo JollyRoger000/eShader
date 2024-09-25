@@ -266,6 +266,7 @@ static void read_index_html()
     {
         ESP_LOGE(tag, "index.html is not found");
     }
+    // Читаем содержимое index.html
     else
     {
         index_html_size = st.st_size;
