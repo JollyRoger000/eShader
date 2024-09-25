@@ -210,8 +210,9 @@ static void handler_on_sta_got_ip(void *arg, esp_event_base_t event_base, int32_
 static httpd_handle_t server_setup(void);
 
 #define INDEX_HTML_PATH "/spiffs/index.html"
-char index_html[4096];
-char response_data[4096];
+static char index_html[4096];
+static long long index_html_size = 0;
+
 
 // Функция инициализации spiffs
 static void init_spiffs(void)
@@ -258,30 +259,35 @@ static void read_index_html()
     const char *tag = "read_index_html";
 
     memset((void *)index_html, 0, sizeof(index_html));
+
+    // Читаем состояние файла index.html
     struct stat st;
     if (stat(INDEX_HTML_PATH, &st))
     {
         ESP_LOGE(tag, "index.html is not found");
-        return;
-    }
-
-    FILE *fp = fopen(INDEX_HTML_PATH, "r");
-    if (fread(index_html, st.st_size, 1, fp) == 0)
-    {
-        ESP_LOGE(tag, "file read failed");
     }
     else
     {
-        ESP_LOGI(tag, "index.html read success");
+        index_html_size = st.st_size;
+        ESP_LOGI(tag, "index.html found, size: %lld byte", index_html_size);
+
+        FILE *fp = fopen(INDEX_HTML_PATH, "r");
+        if (fread(index_html, index_html_size, 1, fp) == 0)
+        {
+            ESP_LOGE(tag, "file read failed");
+        }
+        else
+        {
+            ESP_LOGI(tag, "index.html read success");
+        }
+        fclose(fp);
     }
-    fclose(fp);
 }
 
 esp_err_t send_web_page(httpd_req_t *req)
 {
     const char *tag = "send_web_page";
-    sprintf(response_data, index_html);
-    int response = httpd_resp_send(req, response_data, HTTPD_RESP_USE_STRLEN);
+    int response = httpd_resp_send(req, index_html, index_html_size);
     ESP_LOGI(tag, "Response: %d", response);
     return response;
 }
@@ -403,18 +409,19 @@ static esp_err_t send_telegram_message(const char *message)
 {
     const char *tag = "send_telegram_message";
     char *url = _stringf("https://api.telegram.org/bot%s/sendMessage?chat_id=%s&text=%s", TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message);
-    
-    esp_http_client_config_t config = {
-        .url = url,
-        .method = HTTP_METHOD_POST,
-        .transport_type = HTTP_TRANSPORT_OVER_SSL,
-        .cert_pem = (char *)tg_org_pem_start,
-        .port = 443,
-    };
+
+    esp_http_client_config_t *cfg;
+    cfg = (esp_http_client_config_t *)calloc(1, sizeof(esp_http_client_config_t));
+    cfg->url = url;
+    cfg->method = HTTP_METHOD_GET;
+    cfg->transport_type = HTTP_TRANSPORT_OVER_SSL;
+    cfg->cert_pem = (char *)tg_org_pem_start;
+    cfg->port = 443;
+    esp_http_client_handle_t client = esp_http_client_init(cfg);
 
     vPortFree(url);
+    vPortFree(cfg);
 
-    esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL)
     {
         ESP_LOGE(tag, "HTTP client init error");
