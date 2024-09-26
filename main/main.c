@@ -185,7 +185,7 @@ static void time_sync_cb(struct timeval *tv);
 static void timer1_cb(TimerHandle_t pxTimer);
 static void onCalibrate();
 static void onStop();
-static void onShade(int shade);
+static void onShade();
 static void move_task(void *param);
 static void calibrate_task(void *param);
 static void smartconfig_task(void *param);
@@ -212,7 +212,6 @@ static httpd_handle_t server_setup(void);
 #define INDEX_HTML_PATH "/spiffs/index.html"
 static char index_html[4096];
 static long long index_html_size = 0;
-
 
 // Функция инициализации spiffs
 static void init_spiffs(void)
@@ -522,29 +521,6 @@ static void onStop()
     {
         ESP_LOGE(tag, "unknown command");
     }
-}
-
-// Функция перемещения в заданное положения
-static void onShade(int shade)
-{
-    char *tag = "on_shade";
-    ESP_LOGI(tag, "New shade: (%d) message received", shade);
-
-    shade = shade;
-    if (calibrate == 1)
-    {
-        xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
-    }
-    else
-    {
-        ESP_LOGW(tag, "Shade is not calibrated");
-        move_status = _string("stopped");
-    }
-
-    /// Публикуем топик статуса
-    char *str = mqttStatusJson();
-    mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-    vPortFree(str);
 }
 
 static void time_sync_start(const char *tz)
@@ -888,9 +864,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             mqttPublish(event->client, mqttTopicSystem, system, mqttTopicSystemQoS, mqttTopicSystemRet);
             vPortFree(system);
 
-            tgMessage = (char *)malloc(50 * sizeof(char));
-            strcpy(tgMessage, mqttHostname);
-            strcat(tgMessage, "_online");
+            tgMessage = _stringf("eShader-%s_online", mqttHostname);
             send_telegram_message(tgMessage);
         }
         break;
@@ -1010,8 +984,30 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                 }
                 else
                 {
-                    // onShade(atoi(data));
-                    onShade(strtol(data, NULL, 10));
+                    shade = strtol(data, NULL, 10);
+                    ESP_LOGI(tag, "Set shade: %d", shade);
+
+                    if (shade < 0 || shade > 100)
+                    {
+                        ESP_LOGW(tag, "Invalid shade value: %d", shade);
+                    }
+                    else
+                    {
+                        if (calibrate == 1)
+                        {
+                            xTaskCreate(move_task, "move_task", 4096, NULL, 3, &move_task_handle);
+                        }
+                        else
+                        {
+                            ESP_LOGW(tag, "Shade is not calibrated");
+                            move_status = _string("stopped");
+                        }
+
+                        // Публикуем топик статуса
+                        char *str = mqttStatusJson();
+                        mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+                        vPortFree(str);
+                    }
                 }
             }
 
@@ -1760,11 +1756,12 @@ static void move_task(void *param)
     int dir = 0;
 
     target_pos = (int)(length * shade / 100.0);
+    ESP_LOGI(tag, "Task started. Current position: %d Shade: %d New target: %d", current_pos, shade, target_pos);
 
     if (current_pos < target_pos)
     {
         // Направление движения - вниз (закрытие)
-        strcpy(move_status, "closing");
+        move_status = _string("closing");
         gpio_set_level(SM_DIR, 1);
         // Разрешаем вращение
         gpio_set_level(SM_nEN, 0);
@@ -1791,11 +1788,7 @@ static void move_task(void *param)
         ESP_LOGI(tag, "SM on target: %d", target_pos);
     }
 
-    tgMessage = (char *)malloc(50 * sizeof(char));
-    strcpy(tgMessage, mqttHostname);
-    strcat(tgMessage, "_");
-    strcat(tgMessage, move_status);
-
+    tgMessage = _stringf("%s_%s", mqttHostname, move_status);
     send_telegram_message(tgMessage);
 
     if (dir != 0)
@@ -1833,10 +1826,7 @@ static void move_task(void *param)
     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
     vPortFree(str);
 
-    tgMessage = (char *)malloc(50 * sizeof(char));
-    strcpy(tgMessage, mqttHostname);
-    strcat(tgMessage, "_");
-    strcat(tgMessage, move_status);
+    tgMessage = _stringf("%s_%s", mqttHostname, move_status);
     send_telegram_message(tgMessage);
 
     vTaskDelete(NULL);
