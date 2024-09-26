@@ -464,7 +464,7 @@ static void onCalibrate()
     char *tag = "on_calibrate";
     ESP_LOGW(tag, "CALIBRATE message received");
 
-    strcpy(move_status, "calibrating");
+    move_status = _string("calibrating");
     calibrate = 0;
 
     // Публикуем топик статуса
@@ -490,7 +490,7 @@ static void onStop()
         calibrate = 1;
         current_pos = length;
         target_pos = length;
-        strcpy(move_status, "stopped");
+        move_status = _string("stopped");
 
         ESP_LOGI(tag, "Calibrate success. Shade lenght is: %d", length);
         nvs_write_u16("length", length);
@@ -507,7 +507,7 @@ static void onStop()
     {
         vTaskSuspend(move_task_handle);
         gpio_set_level(LED_STATUS, 0);
-        strcpy(move_status, "stopped");
+        move_status = _string("stopped");
 
         target_pos = current_pos;
         nvs_write_u16("current_pos", current_pos);
@@ -538,7 +538,7 @@ static void onShade(int shade)
     else
     {
         ESP_LOGW(tag, "Shade is not calibrated");
-        strcpy(move_status, "stopped");
+        move_status = _string("stopped");
     }
 
     /// Публикуем топик статуса
@@ -1774,7 +1774,7 @@ static void move_task(void *param)
     if (current_pos > target_pos)
     {
         // Направление движения - вверх (открытие)
-        strcpy(move_status, "opening");
+        move_status = _string("opening");
         gpio_set_level(SM_DIR, 0);
         // Разрешаем вращение
         gpio_set_level(SM_nEN, 0);
@@ -1784,7 +1784,7 @@ static void move_task(void *param)
     if (current_pos == target_pos)
     {
         // Положение установлено
-        strcpy(move_status, "stopped");
+        move_status = _string("stopped");
         dir = 0;
         // Запрещаем вращение
         gpio_set_level(SM_nEN, 1);
@@ -1824,7 +1824,7 @@ static void move_task(void *param)
         ESP_LOGI(tag, "task stopped");
     }
 
-    strcpy(move_status, "stopped");
+    move_status = _string("stopped");
     nvs_write_u16("current_pos", current_pos);
     nvs_write_u16("target_pos", target_pos);
 
@@ -1868,7 +1868,7 @@ static void calibrate_task(void *param)
     gpio_set_level(SM_nEN, 1);
     ESP_LOGE(tag, "Task stopped. System is not calibrated. Stepout: %d steps", calibrateCnt);
     calibrate = 0;
-    strcpy(move_status, "stopped");
+    move_status = _string("stopped");
 
     // Публикуем топик статуса
     char *str = mqttStatusJson();
@@ -2438,6 +2438,7 @@ void app_main(void)
         move_on_sunset = 0;
     }
 
+    move_status = _string("stopped");
     wifi_init();
 
     xTaskCreate(led_task, "led_task", 4096, NULL, 3, NULL);
