@@ -559,6 +559,12 @@ static char *mqttStatusJson()
     char *str = NULL;
 
     cJSON *json = cJSON_CreateObject();
+    
+    cJSON_AddStringToObject(json, "Firmware name", app_name);
+    cJSON_AddStringToObject(json, "Firmware version", app_version);
+    cJSON_AddStringToObject(json, "Firmware build date", app_date);
+    cJSON_AddStringToObject(json, "Firmware build time", app_time);
+
     char *tmp = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
     cJSON_AddStringToObject(json, "local_time", tmp);
     vPortFree(tmp);
@@ -2467,8 +2473,6 @@ void app_main(void)
     ESP_LOGI(tag, "Firmware date: %s", app_date);
     app_time = _string(app_info->time);
     ESP_LOGI(tag, "Firmware time: %s", app_time);
-//    char *app_elf_sha256 = _string(new_app_info->app_elf_sha256);
-//    ESP_LOGI(tag, "New firmware sha256: %s", app_elf_sha256);
 
     move_status = _string("stopped");
     wifi_init();
