@@ -1,11 +1,17 @@
-# For more information about build system see
-# https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html
-# The following five lines of boilerplate have to be in your project's
-# CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.5)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(eShader)
+
+#include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+#set(PROJECT_VER "1.0.0")
+#project(eShader_${PROJECT_VER})
+
+#target_add_binary_data(eShader_${PROJECT_VER}.elf "main/wqtt.pem" TEXT)
+#target_add_binary_data(eShader_${PROJECT_VER}.elf "main/owmap_org.pem" TEXT)
+#target_add_binary_data(eShader_${PROJECT_VER}.elf "main/api_telegram_org.pem" TEXT)
+#target_add_binary_data(eShader_${PROJECT_VER}.elf "main/gts_root_r4.pem" TEXT)
+#target_add_binary_data(eShader_${PROJECT_VER}.elf "main/sunrise_sunset_org.pem" TEXT)
 
 target_add_binary_data(eShader.elf "main/wqtt.pem" TEXT)
 target_add_binary_data(eShader.elf "main/owmap_org.pem" TEXT)

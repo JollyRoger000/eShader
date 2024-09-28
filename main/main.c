@@ -213,6 +213,17 @@ static httpd_handle_t server_setup(void);
 static char index_html[4096];
 static long long index_html_size = 0;
 
+inline void LogGitCommitHash()
+{
+#ifndef GIT_COMMIT_HASH
+#define GIT_COMMIT_HASH "0000000" // 0000000 means uninitialized
+#endif
+
+    ESP_LOGI("main", "GIT_COMMIT_HASH[%s]", GIT_COMMIT_HASH);
+
+    //    std::cout << "GIT_COMMIT_HASH[" << GIT_COMMIT_HASH << "]"; // 4f34ee8
+}
+
 // Функция инициализации spiffs
 static void init_spiffs(void)
 {
@@ -830,6 +841,17 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(tag, "MQTT_EVENT_CONNECTED");
 
         mqttConnected = true;
+        
+        // Если программа дошла до этого момента, то подтверждаем валидность прошивки
+        if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)
+        {
+            ESP_LOGI(tag, "Firmware is valid");
+        }
+        else
+        {
+            ESP_LOGE(tag, "Firmware is not valid. Restarting...");
+            esp_restart();
+        }
 
         if (event->client != NULL)
         {
