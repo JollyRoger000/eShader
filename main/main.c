@@ -140,6 +140,11 @@ char *password = NULL;
 char *ip = NULL;
 char *move_status = NULL;
 
+char *app_name = NULL;
+char* app_version = NULL;
+char* app_date = NULL;
+char*app_time = NULL;
+
 time_t sunrise_time = 0;
 time_t sunset_time = 0;
 uint8_t move_on_sunrise = 0;
@@ -841,7 +846,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(tag, "MQTT_EVENT_CONNECTED");
 
         mqttConnected = true;
-        
+
         // Если программа дошла до этого момента, то подтверждаем валидность прошивки
         if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)
         {
@@ -2449,6 +2454,21 @@ void app_main(void)
         move_on_sunrise = 0;
         move_on_sunset = 0;
     }
+
+    // Читаем информацию о прошивке
+    esp_app_desc_t *app_info  = NULL;
+    app_info = esp_app_get_description();
+
+    app_name = _string(app_info->project_name);
+    ESP_LOGI(tag, "Firmware name: %s", app_name);
+    app_version = _string(app_info->version);
+    ESP_LOGI(tag, "Firmware version: %s", app_version);
+    app_date = _string(app_info->date);
+    ESP_LOGI(tag, "Firmware date: %s", app_date);
+    app_time = _string(app_info->time);
+    ESP_LOGI(tag, "Firmware time: %s", app_time);
+//    char *app_elf_sha256 = _string(new_app_info->app_elf_sha256);
+//    ESP_LOGI(tag, "New firmware sha256: %s", app_elf_sha256);
 
     move_status = _string("stopped");
     wifi_init();
