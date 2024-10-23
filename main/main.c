@@ -141,9 +141,9 @@ char *ip = NULL;
 char *move_status = NULL;
 
 char *app_name = NULL;
-char* app_version = NULL;
-char* app_date = NULL;
-char*app_time = NULL;
+char *app_version = NULL;
+char *app_date = NULL;
+char *app_time = NULL;
 
 time_t sunrise_time = 0;
 time_t sunset_time = 0;
@@ -217,17 +217,6 @@ static httpd_handle_t server_setup(void);
 #define INDEX_HTML_PATH "/spiffs/index.html"
 static char index_html[4096];
 static long long index_html_size = 0;
-
-inline void LogGitCommitHash()
-{
-#ifndef GIT_COMMIT_HASH
-#define GIT_COMMIT_HASH "0000000" // 0000000 means uninitialized
-#endif
-
-    ESP_LOGI("main", "GIT_COMMIT_HASH[%s]", GIT_COMMIT_HASH);
-
-    //    std::cout << "GIT_COMMIT_HASH[" << GIT_COMMIT_HASH << "]"; // 4f34ee8
-}
 
 // Функция инициализации spiffs
 static void init_spiffs(void)
@@ -396,7 +385,6 @@ char *_stringl(const char *source, const uint32_t len)
     const char *tag = "_stringl";
     if (source)
     {
-
         char *ret = (char *)malloc(len + 1);
         if (ret == NULL)
         {
@@ -420,22 +408,59 @@ char *_timestr(const char *format, time_t value, int bufsize)
     return _string(buffer);
 }
 
+uint16_t format_string(char *buffer, uint16_t buffer_size, const char *format, ...)
+{
+    const char *tag = "format_string";
+    uint16_t ret = 0;
+    if (buffer && format)
+    {
+        memset(buffer, 0, buffer_size);
+        // get the list of arguments
+        va_list args;
+        va_start(args, format);
+        uint16_t len = vsnprintf(NULL, 0, format, args);
+        // format string
+        if (len + 1 > buffer_size)
+        {
+            ret = -len;
+            ESP_LOGE(tag, "Buffer %d bytes too small to hold formatted string, %d bytes needed", buffer_size, len + 1);
+        };
+        ret = vsnprintf(buffer, buffer_size, format, args);
+        va_end(args);
+    };
+    return ret;
+}
+
 // Функция для отправки сообщения в Telegram
-static esp_err_t send_telegram_message(const char *message)
+static esp_err_t send_telegram_message(char *msg)
 {
     const char *tag = "send_telegram_message";
-    char *url = _stringf("https://api.telegram.org/bot%s/sendMessage?chat_id=%s&text=%s", TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, message);
+
+    static char buf[2048];
+    static char buf_timestamp[20];
+    static char path[512];
+
+    time_t now = time(NULL);
+    strftime(buf_timestamp, sizeof(buf_timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
+
+    uint16_t size = format_string(buf, 2048, "{\"chat_id\":%s,\"parse_mode\":\"HTML\",\"disable_notification\":%s,\"text\":\"%s\r\n\r\n<code>%s</code>\"}",
+                                  TELEGRAM_CHAT_ID,
+                                  "false",
+                                  msg,
+                                  buf_timestamp);
+
+    sprintf(path, "https://api.telegram.org/bot%s/sendMessage", TELEGRAM_BOT_TOKEN);
 
     esp_http_client_config_t *cfg;
     cfg = (esp_http_client_config_t *)calloc(1, sizeof(esp_http_client_config_t));
-    cfg->url = url;
-    cfg->method = HTTP_METHOD_GET;
+    cfg->path = path;
+    cfg->host = "api.telegram.org";
+    cfg->method = HTTP_METHOD_POST;
     cfg->transport_type = HTTP_TRANSPORT_OVER_SSL;
     cfg->cert_pem = (char *)tg_org_pem_start;
     cfg->port = 443;
     esp_http_client_handle_t client = esp_http_client_init(cfg);
 
-    vPortFree(url);
     vPortFree(cfg);
 
     if (client == NULL)
@@ -443,6 +468,9 @@ static esp_err_t send_telegram_message(const char *message)
         ESP_LOGE(tag, "HTTP client init error");
         return ESP_FAIL;
     }
+
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, buf, strlen(buf));
 
     esp_err_t err = esp_http_client_perform(client);
     if (err != ESP_OK)
@@ -559,7 +587,7 @@ static char *mqttStatusJson()
     char *str = NULL;
 
     cJSON *json = cJSON_CreateObject();
-    
+
     cJSON_AddStringToObject(json, "Firmware name", app_name);
     cJSON_AddStringToObject(json, "Firmware version", app_version);
     cJSON_AddStringToObject(json, "Firmware build date", app_date);
@@ -897,7 +925,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             mqttPublish(event->client, mqttTopicSystem, system, mqttTopicSystemQoS, mqttTopicSystemRet);
             vPortFree(system);
 
-            tgMessage = _stringf("eShader-%s_online", mqttHostname);
+            tgMessage = _stringf("%s\n\nЗатемнение:  %d%%\nСостояние: %s", mqttHostname, shade, move_status);
             send_telegram_message(tgMessage);
         }
         break;
@@ -1821,7 +1849,7 @@ static void move_task(void *param)
         ESP_LOGI(tag, "SM on target: %d", target_pos);
     }
 
-    tgMessage = _stringf("%s_%s", mqttHostname, move_status);
+    tgMessage = _stringf("%s\n\nЗатемнение:  %d%%\nСостояние: %s", mqttHostname, shade, move_status);
     send_telegram_message(tgMessage);
 
     if (dir != 0)
@@ -1859,7 +1887,7 @@ static void move_task(void *param)
     mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
     vPortFree(str);
 
-    tgMessage = _stringf("%s_%s", mqttHostname, move_status);
+    tgMessage = _stringf("%s\n\nЗатемнение:  %d%%\nСостояние: %s", mqttHostname, shade, move_status);
     send_telegram_message(tgMessage);
 
     vTaskDelete(NULL);
@@ -2462,7 +2490,7 @@ void app_main(void)
     }
 
     // Читаем информацию о прошивке
-    esp_app_desc_t *app_info  = NULL;
+    esp_app_desc_t *app_info = NULL;
     app_info = esp_app_get_description();
 
     app_name = _string(app_info->project_name);
