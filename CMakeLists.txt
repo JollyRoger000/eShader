@@ -18,3 +18,4 @@ target_add_binary_data(eShader.elf "main/owmap_org.pem" TEXT)
 target_add_binary_data(eShader.elf "main/api_telegram_org.pem" TEXT)
 target_add_binary_data(eShader.elf "main/gts_root_r4.pem" TEXT)
 target_add_binary_data(eShader.elf "main/sunrise_sunset_org.pem" TEXT)
+

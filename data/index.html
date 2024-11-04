@@ -1,11 +1,183 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+    <title>Настройка Wi-Fi и MQTT</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+
+        form {
+            background: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            max-width: 400px;
+            margin: auto;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .input-container {
+            display: flex;
+            align-items: center; /* Вертикальное выравнивание */
+            margin-bottom: 15px;
+        }
+
+        input[type="text"],
+        input[type="password"],
+        input[type="number"] {
+            flex: 1; /* Расширяем поле ввода, чтобы занять доступное место */
+            padding: 10px;
+            margin-right: 10px; /* Отступ между полем и кнопкой */
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        .update-button {
+            background-color: #28a745; /* Цвет кнопки */
+            color: white;
+            border: none;
+            border-radius: 50%; /* Делаем кнопку круглой */
+            width: 40px; /* Ширина и высота кнопки */
+            height: 40px;
+            cursor: pointer;
+            display: flex; /* Сделаем кнопку гибкой для центрирования текста */
+            align-items: center; /* Центрируем текст по вертикали */
+            justify-content: center; /* Центрируем текст по горизонтали */
+            font-size: 18px; /* Размер текста для иконки */
+        }
+
+        .update-button:hover {
+            background-color: #218838; /* Цвет кнопки при наведении */
+        }
+
+        #response {
+            text-align: center;
+            margin-top: 20px;
+        }
+
+        /* Мобильная адаптация */
+        @media (max-width: 600px) {
+            form {
+                width: 90%; /* Заменяем ширину формы для мобильных устройств */
+                margin: auto; /* Центрируем форму */
+            }
+        }
+    </style>
 </head>
+
 <body>
-    <p>Hello world !!!</p>
+    <h1>Настройка Wi-Fi и MQTT</h1>
+
+    <div id="wifiTab">
+        <form id="configForm">
+            <div class="input-container">
+                <label for="ssid">SSID:</label>
+            </div>
+            <div class="input-container">
+                <input type="text" id="ssid" name="ssid" required placeholder="Введите SSID">
+                <button type="button" class="update-button" onclick="updateField('ssid')">↻</button>
+            </div>
+
+            <div class="input-container">
+                <label for="password">Пароль:</label>
+            </div>
+            <div class="input-container">
+                <input type="password" id="password" name="password" required placeholder="Введите пароль">
+                <button type="button" class="update-button" onclick="updateField('password')">↻</button>
+            </div>
+
+            <div class="input-container">
+                <label for="telegramToken">Токен Telegram:</label>
+            </div>
+            <div class="input-container">
+
+                <input type="text" id="telegramToken" name="telegramToken" required placeholder="Введите токен Telegram">
+                <button type="button" class="update-button" onclick="updateField('telegramToken')">↻</button>
+            </div>
+
+            <div class="input-container">
+                <label for="mqttServer">MQTT Сервер:</label>
+            </div>
+            <div class="input-container">
+                <input type="text" id="mqttServer" name="mqttServer" required placeholder="Введите MQTT сервер">
+                <button type="button" class="update-button" onclick="updateField('mqttServer')">↻</button>
+            </div>
+
+            <div class="input-container">
+                <label for="mqttPort">MQTT Порт:</label>
+            </div>
+            <div class="input-container">
+                <input type="number" id="mqttPort" name="mqttPort" required min="1" max="65535" placeholder="Введите MQTT порт">
+                <button type="button" class="update-button" onclick="updateField('mqttPort')">↻</button>
+            </div>
+
+            <div class="input-container">
+                <label for="mqttPassword">MQTT Пароль:</label>
+            </div>
+            <div class="input-container">
+                <input type="password" id="mqttPassword" name="mqttPassword" required placeholder="Введите MQTT пароль">
+                <button type="button" class="update-button" onclick="updateField('mqttPassword')">↻</button>
+            </div>
+
+            <div class="input-container">
+                <label for="sendInterval">Период отправки (сек):</label>
+            </div>
+            <div class="input-container">
+                <input type="number" id="sendInterval" name="sendInterval" required min="1" placeholder="Введите период отправки">
+                <button type="button" class="update-button" onclick="updateField('sendInterval')">↻</button>
+            </div>
+
+            <div class="input-container">
+                <label for="updateServer">Сервер обновления:</label>
+            </div>
+            <div class="input-container">
+                <input type="text" id="updateServer" name="updateServer" value="https://cs49635.tw1.ru/eShader/updates/eShader.bin" placeholder="Введите сервер обновления">
+                <button type="button" class="update-button" onclick="updateField('updateServer')">↻</button>
+            </div>
+        </form>
+        <div id="response"></div>
+    </div>
+
+    <script>
+        function updateField(fieldId) {
+            const fieldValue = document.getElementById(fieldId).value;
+            console.log(`Обновляем поле: ${fieldId} со значением: ${fieldValue}`);
+
+            // Здесь можно добавить логику для обновления поля на сервере
+            fetch("/update", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ fieldId, fieldValue }),
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById("response").innerText = data.message;
+            })
+            .catch(error => {
+                console.error("Ошибка:", error);
+                document.getElementById("response").innerText = "Ошибка при обновлении поля: " + error.message;
+            });
+        }
+    </script>
 </body>
+
 </html>

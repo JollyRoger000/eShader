@@ -16,5 +16,8 @@
     "idf.toolsPathWin": "C:\\espressif",
     "idf.portWin": "COM3",
     "idf.flashType": "UART",
-    "idf.gitPathWin": "C:\\espressif\\tools\\idf-git\\2.39.2\\cmd\\git.exe"
+    "idf.gitPathWin": "C:\\espressif\\tools\\idf-git\\2.39.2\\cmd\\git.exe",
+    "files.associations": {
+        "cstdlib": "c"
+    }
 }

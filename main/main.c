@@ -214,14 +214,10 @@ static void handler_on_wifi_connect(void *esp_netif, esp_event_base_t event_base
 static void handler_on_sta_got_ip(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static httpd_handle_t server_setup(void);
 
-#define INDEX_HTML_PATH "/spiffs/index.html"
-static char index_html[4096];
-static long long index_html_size = 0;
-
 // Функция инициализации spiffs
 static void init_spiffs(void)
 {
-    const char *tag = "init_web_page_buffer";
+    const char *tag = "init_spiffs";
 
     esp_vfs_spiffs_conf_t conf = {
         .base_path = "/spiffs",
@@ -258,82 +254,304 @@ static void init_spiffs(void)
         ESP_LOGI(tag, "Partition size: total: %d, used: %d", total, used);
     }
 }
-static void read_index_html()
+
+// Функция для настройки HTTP-сервера
+esp_err_t root_get_handler(httpd_req_t *req)
 {
-    const char *tag = "read_index_html";
+    const char *tag = "root_get_handler";
+    const char *path = "/spiffs/index.html"; // Путь к файлу
 
-    memset((void *)index_html, 0, sizeof(index_html));
-
-    // Читаем состояние файла index.html
+    // Проверка существования файла index.html
     struct stat st;
-    if (stat(INDEX_HTML_PATH, &st))
+    if (stat(path, &st) != 0)
     {
-        ESP_LOGE(tag, "index.html is not found");
+        ESP_LOGE(tag, "index.html not found");
+        httpd_resp_send_404(req); // Отправка 404, если файл не найден
+        return ESP_FAIL;
     }
-    // Читаем содержимое index.html
+
+    ESP_LOGI(tag, "index.html found, size: %ld bytes", st.st_size);
+
+    // Открытие файла и отправка его содержимого
+    FILE *fp = fopen(path, "r");
+    if (fp == NULL)
+    {
+        ESP_LOGE(tag, "Failed to open index.html for reading");
+        httpd_resp_send_500(req); // Серверная ошибка, если открытие файла не удалось
+        return ESP_FAIL;
+    }
+
+    char buffer[512];
+    size_t read_bytes;
+    httpd_resp_set_type(req, "text/html");
+
+    // Чтение файла и отправка содержимого
+    while ((read_bytes = fread(buffer, 1, sizeof(buffer), fp)) > 0)
+    {
+        httpd_resp_send_chunk(req, buffer, read_bytes);
+    }
+
+    fclose(fp);                          // Закрытие файла
+    httpd_resp_send_chunk(req, NULL, 0); // Завершение ответа
+    return ESP_OK;
+}
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+
+esp_err_t data_post_handler(httpd_req_t *req)
+{
+    const char *TAG = "data_post_handler";
+    char buf[512];
+    int ret, remaining = req->content_len;
+
+    // Чтение тела запроса
+    while (remaining > 0)
+    {
+        ret = httpd_req_recv(req, buf, MIN(remaining, sizeof(buf)));
+        if (ret < 0)
+        {
+            ESP_LOGE(TAG, "Error receiving data");
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Error receiving data");
+            return ESP_FAIL;
+        }
+        remaining -= ret;
+    }
+
+    // Парсинг JSON
+    cJSON *json = cJSON_Parse(buf);
+    if (json == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to parse JSON");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to parse JSON");
+        return ESP_FAIL;
+    }
+
+    // Получение данных
+    cJSON *ssid = cJSON_GetObjectItem(json, "ssid");
+    cJSON *password = cJSON_GetObjectItem(json, "password");
+    cJSON *telegramToken = cJSON_GetObjectItem(json, "telegramToken");
+    cJSON *mqttServer = cJSON_GetObjectItem(json, "mqttServer");
+    cJSON *mqttPort = cJSON_GetObjectItem(json, "mqttPort");
+    cJSON *mqttPassword = cJSON_GetObjectItem(json, "mqttPassword");
+    cJSON *sendInterval = cJSON_GetObjectItem(json, "sendInterval");
+
+    // Проверка на валидность данных
+    // if (ssid && cJSON_IsString(ssid) &&
+    //     password && cJSON_IsString(password) &&
+    //     telegramToken && cJSON_IsString(telegramToken) &&
+    //     mqttServer && cJSON_IsString(mqttServer) &&
+    //     mqttPort && cJSON_IsNumber(mqttPort) &&
+    //     mqttPassword && cJSON_IsString(mqttPassword) &&
+    //     sendInterval && cJSON_IsNumber(sendInterval))
+    // {
+
+    ESP_LOGI(TAG, "Received SSID: %s, Password: %s, Telegram Token: %s, MQTT Server: %s, MQTT Port: %d, MQTT Password: %s, Send Interval: %d",
+             ssid->valuestring, password->valuestring, telegramToken->valuestring,
+             mqttServer->valuestring, mqttPort->valueint, mqttPassword->valuestring, sendInterval->valueint);
+
+    // Здесь можно добавить логику для подключения к Wi-Fi и MQTT с использованием полученных данных
+
+    // Формирование успешного ответа
+    const char *resp_msg = "{\"message\":\"Данные успешно получены!\"}";
+    httpd_resp_send(req, resp_msg, strlen(resp_msg));
+    // }
+    // else
+    // {
+    //     ESP_LOGE(TAG, "Invalid input data");
+    //     cJSON_Delete(json);
+    //     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid input data");
+    //     return ESP_FAIL;
+    // }
+
+    cJSON_Delete(json); // Удаление парсенного JSON
+    return ESP_OK;
+}
+
+esp_err_t update_firmware_handler(httpd_req_t *req)
+{
+    const char *TAG = "update_firmware_handler";
+    char buf[512];
+    int ret, remaining = req->content_len;
+
+    // Чтение тела запроса
+    while (remaining > 0)
+    {
+        ret = httpd_req_recv(req, buf, MIN(remaining, sizeof(buf)));
+        if (ret < 0)
+        {
+            ESP_LOGE(TAG, "Error receiving data");
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Error receiving data");
+            return ESP_FAIL;
+        }
+        remaining -= ret;
+    }
+
+    // Парсинг JSON
+    cJSON *json = cJSON_Parse(buf);
+    if (json == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to parse JSON");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Failed to parse JSON");
+        return ESP_FAIL;
+    }
+
+    cJSON *updateServer = cJSON_GetObjectItem(json, "updateServer");
+    if (updateServer && cJSON_IsString(updateServer))
+    {
+        ESP_LOGI(TAG, "Updating firmware from: %s", updateServer->valuestring);
+
+        // Здесь должна быть логика для обновления прошивки
+        // Например, загрузка файла из updateServer
+
+        // Формирование успешного ответа
+        const char *resp_msg = "{\"message\":\"Прошивка успешно обновлена!\"}";
+        httpd_resp_send(req, resp_msg, strlen(resp_msg));
+    }
     else
     {
-        index_html_size = st.st_size;
-        ESP_LOGI(tag, "index.html found, size: %lld byte", index_html_size);
-
-        FILE *fp = fopen(INDEX_HTML_PATH, "r");
-        if (fread(index_html, index_html_size, 1, fp) == 0)
-        {
-            ESP_LOGE(tag, "file read failed");
-        }
-        else
-        {
-            ESP_LOGI(tag, "index.html read success");
-        }
-        fclose(fp);
+        ESP_LOGE(TAG, "Invalid update server URL");
+        cJSON_Delete(json);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid update server URL");
+        return ESP_FAIL;
     }
+
+    cJSON_Delete(json); // Удаление парсенного JSON
+    return ESP_OK;
 }
 
-esp_err_t send_web_page(httpd_req_t *req)
+// Обработчик обновления поля
+esp_err_t update_handler(httpd_req_t *req)
 {
-    const char *tag = "send_web_page";
-    int response = httpd_resp_send(req, index_html, index_html_size);
-    ESP_LOGI(tag, "Response: %d", response);
-    return response;
+    const char *TAG = "update_field_handler";
+    char buf[100];
+    int ret, remaining = req->content_len;
+
+    // Считываем тело запроса
+    while (remaining > 0)
+    {
+        if ((ret = httpd_req_recv(req, buf, MIN(remaining, sizeof(buf)))) <= 0)
+        {
+            if (ret == HTTPD_SOCK_ERR_TIMEOUT)
+            {
+                continue;
+            }
+            return ESP_FAIL;
+        }
+        remaining -= ret;
+    }
+
+    // Преобразуем тело запроса в JSON
+    cJSON *json = cJSON_Parse(buf);
+    if (json == NULL)
+    {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    // Извлекаем поле и его значение
+    const cJSON *fieldId = cJSON_GetObjectItemCaseSensitive(json, "fieldId");
+    const cJSON *fieldValue = cJSON_GetObjectItemCaseSensitive(json, "fieldValue");
+
+    if (!cJSON_IsString(fieldId) || !cJSON_IsString(fieldValue))
+    {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid fieldId or fieldValue");
+        cJSON_Delete(json);
+        return ESP_FAIL;
+    }
+
+    // Логика обработки обновлений
+    ESP_LOGI(TAG, "Update param: %s new value: %s", fieldId->valuestring, fieldValue->valuestring);
+    // Здесь вы можете добавить логику для сохранения обновлений в Flash или другую логику
+
+    // Возвращаем успешный ответ
+    const char *resp_str = "{\"message\": \"Обновление успешно выполнено.\"}";
+    httpd_resp_sendstr(req, resp_str);
+    cJSON_Delete(json);
+    return ESP_OK;
 }
 
-esp_err_t get_req_handler(httpd_req_t *req)
+httpd_handle_t start_webserver(void)
 {
-    return send_web_page(req);
-}
+    const char *TAG = "start_webserver";
+    ESP_LOGI(TAG, "Starting server..."); // Лог информирования о запуске сервера
 
-httpd_uri_t uri_get = {
-    .uri = "/",
-    .method = HTTP_GET,
-    .handler = get_req_handler,
-    .user_ctx = NULL};
-
-httpd_handle_t server_setup(void)
-{
-    const char *tag = "local server setup...";
-
+    // Конфигурация сервера
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = 80;     // Порт сервера
+    config.max_uri_handlers = 8; // Максимальное количество обработчиков URI
+
     httpd_handle_t server = NULL;
 
+    // Запуск HTTP-сервера
     if (httpd_start(&server, &config) == ESP_OK)
     {
+        // Регистрация обработчика для корневой страницы
+        httpd_uri_t uri_get = {
+            .uri = "/",                  // URI для корневой страницы
+            .method = HTTP_GET,          // Метод HTTP
+            .handler = root_get_handler, // Обработчик запроса
+            .user_ctx = NULL             // Дополнительный контекст (не используется)
+        };
+
+        // Регистрация обработчика для получения данных
+        httpd_uri_t uri_update = {
+            .uri = "/update",          // URI для получения данных
+            .method = HTTP_POST,             // Метод HTTP
+            .handler = update_handler, // Обработчик получения данных
+            .user_ctx = NULL                 // Дополнительный контекст (не используется)
+        };
+
+        // Регистрация обработчиков URI
         httpd_register_uri_handler(server, &uri_get);
-        ESP_LOGI(tag, "Server started");
+        httpd_register_uri_handler(server, &uri_update);
+
+        ESP_LOGI(TAG, "Server started"); // Лог успешного запуска сервера
     }
     else
     {
-        ESP_LOGE(tag, "Failed to start server");
+        ESP_LOGE(TAG, "Failed to start server"); // Сообщение об ошибке
     }
 
-    return server;
+    return server; // Возврат дескриптора сервера
 }
 
+// char *_string(const char *source)
+// {
+//     const char *tag = "_string";
+//     if (source)
+//     {
+//         uint32_t len = strlen(source);
+
+//         char *ret = (char *)malloc(len + 1);
+//         if (ret == NULL)
+//         {
+//             ESP_LOGE(tag, "Failed to create string: out of memory!");
+//             return NULL;
+//         }
+//         memset(ret, 0, len + 1);
+//         strcpy(ret, source);
+//         return ret;
+//     };
+//     return NULL;
+// }
+
+/**
+ * @brief Создает дублирующую строку из переданного источника.
+ *
+ * Эта функция выделяет память для новой строки и копирует в нее содержимое
+ * переданной строки. Если переданная строка является NULL, функция
+ * вернет NULL. В случае ошибки при выделении памяти будет выведено
+ * сообщение об ошибке в лог.
+ *
+ * @param source Указатель на строку, которую необходимо скопировать.
+ * @return Указатель на новую строку при успехе; NULL в случае ошибки.
+ */
 char *_string(const char *source)
 {
     const char *tag = "_string";
     if (source)
     {
-        uint32_t len = strlen(source);
+        size_t len = strlen(source);
 
         char *ret = (char *)malloc(len + 1);
         if (ret == NULL)
@@ -341,10 +559,14 @@ char *_string(const char *source)
             ESP_LOGE(tag, "Failed to create string: out of memory!");
             return NULL;
         }
-        memset(ret, 0, len + 1);
-        strcpy(ret, source);
+
+        // Использовать strncpy для большей безопасности
+        strncpy(ret, source, len);
+        ret[len] = '\0'; // гарантируем, что строка будет завершена нулем
         return ret;
-    };
+    }
+
+    ESP_LOGE(tag, "Source string is NULL.");
     return NULL;
 }
 
@@ -494,6 +716,139 @@ static esp_err_t send_telegram_message(char *msg)
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return ESP_OK;
+}
+
+void telegram_get_message_task(void *pvParameters)
+{
+    const char *TAG = "telegram_get_message_task";
+    ESP_LOGI(TAG, "Telegram task started");
+
+    while (true)
+    {
+        if (mqttConnected)
+        {
+
+            // Формирование URL для получения обновлений
+            char url[256];
+            sprintf(url, "https://api.telegram.org/bot%s/getUpdates?offset=-1&timeout=60", TELEGRAM_BOT_TOKEN);
+
+            // esp_http_client_config_t config = {
+            //     .url = url,
+            //     .method = HTTP_METHOD_GET,
+            //     .event_handler = NULL,
+            //     .cert_pem = NULL,
+            //     .buffer_size = 1024,
+            //     .keep_alive_enable = true,
+            // };
+            // esp_http_client_handle_t client = esp_http_client_init(&config);
+
+            esp_http_client_config_t *cfg;
+            cfg = (esp_http_client_config_t *)calloc(1, sizeof(esp_http_client_config_t));
+            cfg->path = url;
+            cfg->host = "api.telegram.org";
+            cfg->method = HTTP_METHOD_GET;
+            cfg->transport_type = HTTP_TRANSPORT_OVER_SSL;
+            cfg->cert_pem = (char *)tg_org_pem_start;
+            cfg->port = 443;
+            cfg->buffer_size = 1024;
+            esp_http_client_handle_t client = esp_http_client_init(cfg);
+
+            vPortFree(cfg);
+
+            if (!client)
+            {
+                ESP_LOGE(TAG, "Failed to initialize HTTP client");
+                vTaskDelay(pdMS_TO_TICKS(5000));
+                continue;
+            }
+            // esp_http_client_set_header(client, "Content-Type", "application/json");
+
+            esp_err_t err = esp_http_client_perform(client);
+            if (err == ESP_OK)
+            {
+                ESP_LOGI(TAG, "Successfully fetched updates from Telegram.");
+                // Здесь вы можете обработать ответ и извлечь сообщения
+                int content_length = esp_http_client_get_content_length(client);
+                char *response = (char *)malloc(content_length + 1);
+                // memset(response, 0, content_length + 1);
+                esp_http_client_read(client, response, content_length);
+                response[content_length] = '\0'; // Завершающий нуль
+                ESP_LOGI(TAG, "Response: %s", response);
+                free(response);
+            }
+            else
+            {
+                ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
+            }
+
+            // esp_err_t err = esp_http_client_perform(client);
+            // if (err != ESP_OK)
+            // {
+            //     ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
+            //     esp_http_client_cleanup(client);
+            //     vTaskDelay(pdMS_TO_TICKS(5000));
+            //     continue;
+            // }
+
+            // int status_code = esp_http_client_get_status_code(client);
+            // if (status_code == 200)
+            // {
+            //     ESP_LOGI(TAG, "HTTP GET Status = %d, content_length = %llu", status_code, esp_http_client_get_content_length(client));
+
+            //     char *response = malloc(esp_http_client_get_content_length(client) + 1);
+            //     if (response == NULL)
+            //     {
+            //         ESP_LOGE(TAG, "Failed to allocate memory for response buffer");
+            //         esp_http_client_cleanup(client);
+            //         vTaskDelay(pdMS_TO_TICKS(5000));
+            //         continue;
+            //     }
+
+            //     memset(response, 0, esp_http_client_get_content_length(client) + 1);
+            //     esp_http_client_read_response(client, response, esp_http_client_get_content_length(client));
+
+            //     cJSON *root = cJSON_Parse(response);
+            //     if (root == NULL)
+            //     {
+            //         ESP_LOGE(TAG, "Failed to parse JSON response");
+            //         free(response);
+            //         esp_http_client_cleanup(client);
+            //         vTaskDelay(pdMS_TO_TICKS(5000));
+            //         continue;
+            //     }
+
+            //     cJSON *result = cJSON_GetObjectItem(root, "result");
+            //     if (cJSON_IsArray(result))
+            //     {
+            //         int array_size = cJSON_GetArraySize(result);
+            //         for (int i = 0; i < array_size; ++i)
+            //         {
+            //             cJSON *update = cJSON_GetArrayItem(result, i);
+            //             cJSON *message = cJSON_GetObjectItem(update, "message");
+            //             if (message && cJSON_HasObjectItem(message, "text"))
+            //             {
+            //                 cJSON *chat_id = cJSON_GetObjectItem(message, "chat");
+            //                 cJSON *text = cJSON_GetObjectItem(message, "text");
+            //                 if (strcmp(TELEGRAM_CHAT_ID, chat_id->valuestring) == 0)
+            //                 {
+            //                     ESP_LOGI(TAG, "Received message from Chat ID %s: %s", TELEGRAM_CHAT_ID, text->valuestring);
+            //                 }
+            //             }
+            //         }
+            //     }
+
+            //     cJSON_Delete(root);
+            //     free(response);
+            // }
+            // else
+            // {
+            //     ESP_LOGE(TAG, "HTTP GET Status = %d", status_code);
+            // }
+
+            esp_http_client_cleanup(client);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10000)); // Задержка перед следующим запросом
+    }
 }
 
 static float esp_heap_free_percent()
@@ -2509,6 +2864,7 @@ void app_main(void)
     xTaskCreate(init_btn_task, "init_btn_task", 2048, NULL, 3, NULL);
     xTaskCreate(openweather_task, "openweather_task", 8000, NULL, 3, NULL);
     xTaskCreate(publish_task, "publish_task", 4096, NULL, 3, NULL);
+    xTaskCreate(telegram_get_message_task, "telegram_get_message_task", 4096, NULL, 3, NULL);
 
     // Создаем программный таймер с периодом 1 секунда
     timer1_handle = xTimerCreate(
@@ -2524,8 +2880,7 @@ void app_main(void)
         ESP_LOGI(tag, "timer 1 started...");
     }
 
-    // Запускаем локальный веб сервер
+    // Запуск HTTP-сервера
     init_spiffs();
-    read_index_html();
-    server_setup();
+    start_webserver();
 }
