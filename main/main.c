@@ -1174,98 +1174,170 @@ static char *mqttSystemJson()
 
     return str;
 }
-/* Функция записи uint8 NVS */
+
+/**
+ * @brief Записывает 8-битное целочисленное значение в NVS.
+ *
+ * Эта функция открывает хранилище NVS, записывает указанное значение по заданному ключу
+ * и закрывает хранилище.
+ *
+ * @param key Указатель на строку, представляющую ключ для хранения.
+ * @param val 8-битное целочисленное значение для записи.
+ * @return esp_err_t Коды ошибок ESP, указывающие на успешность операции.
+ */
 static esp_err_t nvs_write_u8(char *key, uint8_t val)
 {
     nvs_handle_t handle;
     esp_err_t err;
-    char *tag = "save_uint8";
+    const char *tag = "save_uint8"; // Константная строка для логирования
+
+    // Открытие NVS хранилища
     err = nvs_open("storage", NVS_READWRITE, &handle);
     if (err == ESP_OK)
     {
         ESP_LOGI(tag, "nvs open success");
         ESP_LOGI(tag, "writing data (%d) to key (%s)", val, key);
+
+        // Запись 8-битного значения
         err = nvs_set_u8(handle, key, val);
         if (err == ESP_OK)
         {
-            nvs_commit(handle);
-            ESP_LOGI(tag, "writing success");
+            // Коммит изменений
+            err = nvs_commit(handle);
+            if (err == ESP_OK)
+            {
+                ESP_LOGI(tag, "writing success");
+            }
+            else
+            {
+                ESP_LOGE(tag, "commit error (%s)", esp_err_to_name(err));
+            }
         }
         else
         {
             ESP_LOGE(tag, "writing error (%s)", esp_err_to_name(err));
         }
+
+        // Закрытие NVS хранилища
         nvs_close(handle);
     }
     else
     {
         ESP_LOGE(tag, "nvs open error (%s)", esp_err_to_name(err));
     }
+
     return err;
 }
 
-/* Функция записи uint16 NVS */
+/**
+ * @brief Записывает 16-битное целочисленное значение в NVS.
+ *
+ * Эта функция открывает хранилище NVS, записывает указанное 16-битное значение по заданному
+ * ключу и закрывает хранилище. Если возникнут ошибки, они будут записаны в лог.
+ *
+ * @param key Указатель на строку, представляющую ключ для хранения.
+ * @param val 16-битное целочисленное значение для записи.
+ * @return esp_err_t Коды ошибок ESP, указывающие на успешность операции.
+ */
 static esp_err_t nvs_write_u16(char *key, uint16_t val)
 {
     nvs_handle_t handle;
     esp_err_t err;
-    char *tag = "save_uint16";
+    const char *tag = "save_uint16"; // Константная строка для логирования
+
+    // Открытие NVS хранилища
     err = nvs_open("storage", NVS_READWRITE, &handle);
     if (err == ESP_OK)
     {
         ESP_LOGI(tag, "nvs open success");
         ESP_LOGI(tag, "writing data (%d) to key (%s)", val, key);
+
+        // Запись 16-битного значения
         err = nvs_set_u16(handle, key, val);
         if (err == ESP_OK)
         {
-            nvs_commit(handle);
-            ESP_LOGI(tag, "writing success");
+            // Коммит изменений
+            err = nvs_commit(handle);
+            if (err == ESP_OK)
+            {
+                ESP_LOGI(tag, "writing success");
+            }
+            else
+            {
+                ESP_LOGE(tag, "commit error (%s)", esp_err_to_name(err));
+            }
         }
         else
         {
             ESP_LOGE(tag, "writing error (%s)", esp_err_to_name(err));
         }
+
+        // Закрытие NVS хранилища
         nvs_close(handle);
     }
     else
     {
         ESP_LOGE(tag, "nvs open error (%s)", esp_err_to_name(err));
     }
+
     return err;
 }
 
-/* Функция записи char* NVS*/
-static esp_err_t nvs_write_str(char *key, char *val)
+/**
+ * @brief Записывает строковое значение в NVS.
+ *
+ * Эта функция открывает хранилище NVS, записывает указанную строку по заданному ключу
+ * и закрывает хранилище. Если возникнут ошибки, они будут записаны в лог.
+ *
+ * @param key Указатель на строку, представляющую ключ для хранения.
+ * @param val Указатель на строку, представляющую значение для записи.
+ * @return esp_err_t Коды ошибок ESP, указывающие на успешность операции.
+ */
+static esp_err_t nvs_write_str(const char *key, const char *val)
 {
-    nvs_handle_t my_handle;
+    nvs_handle_t handle;
     esp_err_t err;
-    char *tag = "save_nvs";
+    const char *tag = "save_nvs"; // Константная строка для логирования
+
     ESP_LOGI(tag, "Opening Non-Volatile Storage (NVS) handle... ");
-    /* Открываем NVS для записи*/
-    err = nvs_open("storage", NVS_READWRITE, &my_handle);
+
+    // Открытие NVS для записи
+    err = nvs_open("storage", NVS_READWRITE, &handle);
     if (err != ESP_OK)
     {
         ESP_LOGE(tag, "Error (%s) opening NVS handle!", esp_err_to_name(err));
+        return err; // Возврат ошибки, если не удалось открыть NVS
     }
-    else
+
+    ESP_LOGI(tag, "NVS handle open success");
+    ESP_LOGI(tag, "Writing data [%s] to key [%s] in NVS memory", val, key);
+
+    // Запись строкового значения
+    err = nvs_set_str(handle, key, val);
+    if (err == ESP_OK)
     {
-        ESP_LOGI(tag, "NVS handle open success");
-        ESP_LOGI(tag, "Writing data [%s] to key [%s] in NVS memory", val, key);
-        err = nvs_set_str(my_handle, key, val);
+        // Коммит изменений
+        err = nvs_commit(handle);
         if (err == ESP_OK)
         {
-            nvs_commit(my_handle);
             ESP_LOGI(tag, "Writing success");
         }
         else
         {
-            ESP_LOGE(tag, "Writing Error!");
+            ESP_LOGE(tag, "Error committing changes (%s)", esp_err_to_name(err));
         }
-
-        nvs_close(my_handle);
     }
-    return err;
+    else
+    {
+        ESP_LOGE(tag, "Writing error (%s)", esp_err_to_name(err));
+    }
+
+    // Закрытие NVS
+    nvs_close(handle);
+
+    return err; // Возврат результата операции
 }
+
 
 // Функция подписки на топики
 static bool mqttSubscribe(esp_mqtt_client_handle_t client, char *topic, int qos)
