@@ -127,7 +127,7 @@ char *sunset = NULL;
 char *last_ow_updated = NULL;
 char *last_started = NULL;
 char *ow_key = NULL;
-char *tg_key = NULL;
+char *tg_bot_token = NULL;
 char *city = NULL;
 char *country = NULL;
 char *update_url = NULL;
@@ -496,9 +496,9 @@ httpd_handle_t start_webserver(void)
         // Регистрация обработчика для получения данных
         httpd_uri_t uri_update = {
             .uri = "/update",          // URI для получения данных
-            .method = HTTP_POST,             // Метод HTTP
+            .method = HTTP_POST,       // Метод HTTP
             .handler = update_handler, // Обработчик получения данных
-            .user_ctx = NULL                 // Дополнительный контекст (не используется)
+            .user_ctx = NULL           // Дополнительный контекст (не используется)
         };
 
         // Регистрация обработчиков URI
@@ -514,7 +514,6 @@ httpd_handle_t start_webserver(void)
 
     return server; // Возврат дескриптора сервера
 }
-
 
 /**
  * @brief Создает дублирующую строку из переданного источника.
@@ -686,12 +685,6 @@ char *_timestr(const char *format, time_t value, int bufsize)
     return _string(buffer);
 }
 
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <esp_log.h>
-
 /**
  * @brief Форматирует строку в массив символов с использованием переменного числа аргументов.
  *
@@ -744,37 +737,67 @@ uint16_t format_string(char *buffer, uint16_t buffer_size, const char *format, .
     return ret > 0 ? ret : 0; // Возвращаем положительное значение или 0 при неудаче
 }
 
-// Функция для отправки сообщения в Telegram
-static esp_err_t send_telegram_message(char *msg)
+/**
+ * @brief Отправляет сообщение в Telegram через бот.
+ *
+ * Эта функция формирует JSON-запрос и отправляет его в Telegram API для пересылки сообщения.
+ *
+ * @param msg Указатель на строку, содержащую текст сообщения, которое будет отправлено.
+ *            Не должен быть NULL.
+ * @return
+ * - `ESP_OK` в случае успешной отправки сообщения.
+ * - `ESP_ERR_INVALID_ARG` если входящий параметр @p msg равен NULL.
+ * - `ESP_ERR_NO_MEM` если не удалось выделить память для конфигурации HTTP-клиента.
+ * - `ESP_FAIL` если произошла ошибка при форматировании сообщения или отправке запроса.
+ */
+static esp_err_t send_telegram_message(const char *msg)
 {
     const char *tag = "send_telegram_message";
 
-    static char buf[2048];
-    static char buf_timestamp[20];
-    static char path[512];
+    if (!msg)
+    {
+        ESP_LOGE(tag, "Message cannot be NULL");
+        return ESP_ERR_INVALID_ARG; // Неверный аргумент
+    }
+
+    char buf[2048];
+    char buf_timestamp[20];
+    char path[512];
 
     time_t now = time(NULL);
     strftime(buf_timestamp, sizeof(buf_timestamp), "%Y-%m-%d %H:%M:%S", localtime(&now));
 
-    uint16_t size = format_string(buf, 2048, "{\"chat_id\":%s,\"parse_mode\":\"HTML\",\"disable_notification\":%s,\"text\":\"%s\r\n\r\n<code>%s</code>\"}",
+    uint16_t size = format_string(buf, sizeof(buf),
+                                  "{\"chat_id\":%s,\"parse_mode\":\"HTML\",\"disable_notification\":%s,\"text\":\"%s\\r\\n\\r\\n<code>%s</code>\"}",
                                   TELEGRAM_CHAT_ID,
                                   "false",
                                   msg,
                                   buf_timestamp);
 
-    sprintf(path, "https://api.telegram.org/bot%s/sendMessage", TELEGRAM_BOT_TOKEN);
+    if (size == 0)
+    {
+        ESP_LOGE(tag, "Failed to format message");
+        return ESP_FAIL; // Ошибка при форматировании сообщения
+    }
 
-    esp_http_client_config_t *cfg;
-    cfg = (esp_http_client_config_t *)calloc(1, sizeof(esp_http_client_config_t));
-    cfg->path = path;
-    cfg->host = "api.telegram.org";
+    snprintf(path, sizeof(path), "https://api.telegram.org/bot%s/sendMessage", tg_bot_token);
+
+    esp_http_client_config_t *cfg = malloc(sizeof(esp_http_client_config_t));
+    if (!cfg)
+    {
+        ESP_LOGE(tag, "Failed to allocate memory for HTTP config");
+        return ESP_ERR_NO_MEM; // Проверка выделения памяти
+    }
+
+    memset(cfg, 0, sizeof(esp_http_client_config_t)); // Инициализация нулями
+    cfg->url = path;                                  // Установка полного URL
     cfg->method = HTTP_METHOD_POST;
     cfg->transport_type = HTTP_TRANSPORT_OVER_SSL;
-    cfg->cert_pem = (char *)tg_org_pem_start;
+    cfg->cert_pem = (char *)tg_org_pem_start; // Убедитесь, что сертификат корректен
     cfg->port = 443;
-    esp_http_client_handle_t client = esp_http_client_init(cfg);
 
-    vPortFree(cfg);
+    esp_http_client_handle_t client = esp_http_client_init(cfg);
+    free(cfg); // Освобождаем память для конфигурации
 
     if (client == NULL)
     {
@@ -786,6 +809,7 @@ static esp_err_t send_telegram_message(char *msg)
     esp_http_client_set_post_field(client, buf, strlen(buf));
 
     esp_err_t err = esp_http_client_perform(client);
+
     if (err != ESP_OK)
     {
         ESP_LOGE(tag, "Send message error: %s", esp_err_to_name(err));
@@ -797,154 +821,123 @@ static esp_err_t send_telegram_message(char *msg)
     int status_code = esp_http_client_get_status_code(client);
     if (status_code != 200)
     {
-        ESP_LOGE(tag, "Server status code error : %d", status_code);
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return ESP_FAIL;
+        ESP_LOGE(tag, "Server status code error: %d", status_code);
     }
 
-    ESP_LOGI(tag, "Message send success");
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
+
+    if (status_code == 200)
+    {
+        ESP_LOGI(tag, "Message sent successfully");
+        return ESP_OK;
+    }
+
+    return ESP_FAIL; // Возвращаем ошибку при статусе != 200
+}
+
+#include "cJSON.h"
+
+/**
+ * @brief Обработчик событий HTTP-клиента.
+ *
+ * Этот обработчик обрабатывает различные события, полученные от HTTP-клиента,
+ * включая получение данных, ошибки и состояния подключения.
+ *
+ * @param evt Указатель на событие HTTP-клиента.
+ * @return esp_err_t Статус выполнения.
+ */
+esp_err_t _http_event_handler(esp_http_client_event_t *evt)
+{
+    const char *TAG = "_http_event_handler";
+    switch (evt->event_id)
+    {
+    case HTTP_EVENT_ON_DATA:
+        if (!esp_http_client_is_chunked_response(evt->client))
+        {
+            // Обработка данных
+            ESP_LOGI(TAG, "Получены данные: %.*s", evt->data_len, (char *)evt->data);
+        }
+        break;
+    case HTTP_EVENT_ERROR:
+        ESP_LOGE(TAG, "HTTP Event Error");
+        break;
+    case HTTP_EVENT_ON_CONNECTED:
+        ESP_LOGI(TAG, "HTTP Event Connected");
+        break;
+    case HTTP_EVENT_DISCONNECTED:
+        ESP_LOGI(TAG, "HTTP Event Disconnected");
+        break;
+    default:
+        break;
+    }
     return ESP_OK;
 }
 
-void telegram_get_message_task(void *pvParameters)
+/**
+ * @brief Задача для выполнения HTTP-запросов к Telegram Bot API.
+ *
+ * Эта задача выполняет GET-запрос к Telegram Bot API с использованием
+ * заданного токена бота. Запросы выполняются каждые 10 секунд.
+ *
+ * @param pvParameters Указатель на параметры задачи (не используется).
+ */
+void http_request_task(void *pvParameters)
 {
-    const char *TAG = "telegram_get_message_task";
-    ESP_LOGI(TAG, "Telegram task started");
+    const char *TAG = "http_request_task";
+    char url[256];
 
-    while (true)
+    // Формируем URL для получения обновлений из Telegram
+    sprintf(url, "https://api.telegram.org/bot%s/getUpdates?offset=-1&timeout=60", tg_bot_token);
+
+    while (1)
     {
-        if (mqttConnected)
+        // Конфигурация HTTP-клиента
+        esp_http_client_config_t config = {
+            .url = url,
+            .event_handler = _http_event_handler,
+            .cert_pem = (char *)tg_org_pem_start,      // Указание сертификата для SSL
+            .transport_type = HTTP_TRANSPORT_OVER_SSL, // Использование SSL для запроса
+            .port = 443,                               // Порт для HTTPS
+        };
+
+        // Инициализация HTTP-клиента
+        esp_http_client_handle_t client = esp_http_client_init(&config);
+
+        // Выполнение HTTP-запроса
+        esp_err_t err = esp_http_client_perform(client);
+
+        if (err == ESP_OK)
         {
-
-            // Формирование URL для получения обновлений
-            char url[256];
-            sprintf(url, "https://api.telegram.org/bot%s/getUpdates?offset=-1&timeout=60", TELEGRAM_BOT_TOKEN);
-
-            // esp_http_client_config_t config = {
-            //     .url = url,
-            //     .method = HTTP_METHOD_GET,
-            //     .event_handler = NULL,
-            //     .cert_pem = NULL,
-            //     .buffer_size = 1024,
-            //     .keep_alive_enable = true,
-            // };
-            // esp_http_client_handle_t client = esp_http_client_init(&config);
-
-            esp_http_client_config_t *cfg;
-            cfg = (esp_http_client_config_t *)calloc(1, sizeof(esp_http_client_config_t));
-            cfg->path = url;
-            cfg->host = "api.telegram.org";
-            cfg->method = HTTP_METHOD_GET;
-            cfg->transport_type = HTTP_TRANSPORT_OVER_SSL;
-            cfg->cert_pem = (char *)tg_org_pem_start;
-            cfg->port = 443;
-            cfg->buffer_size = 1024;
-            esp_http_client_handle_t client = esp_http_client_init(cfg);
-
-            vPortFree(cfg);
-
-            if (!client)
-            {
-                ESP_LOGE(TAG, "Failed to initialize HTTP client");
-                vTaskDelay(pdMS_TO_TICKS(5000));
-                continue;
-            }
-            // esp_http_client_set_header(client, "Content-Type", "application/json");
-
-            esp_err_t err = esp_http_client_perform(client);
-            if (err == ESP_OK)
-            {
-                ESP_LOGI(TAG, "Successfully fetched updates from Telegram.");
-                // Здесь вы можете обработать ответ и извлечь сообщения
-                int content_length = esp_http_client_get_content_length(client);
-                char *response = (char *)malloc(content_length + 1);
-                // memset(response, 0, content_length + 1);
-                esp_http_client_read(client, response, content_length);
-                response[content_length] = '\0'; // Завершающий нуль
-                ESP_LOGI(TAG, "Response: %s", response);
-                free(response);
-            }
-            else
-            {
-                ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
-            }
-
-            // esp_err_t err = esp_http_client_perform(client);
-            // if (err != ESP_OK)
-            // {
-            //     ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
-            //     esp_http_client_cleanup(client);
-            //     vTaskDelay(pdMS_TO_TICKS(5000));
-            //     continue;
-            // }
-
-            // int status_code = esp_http_client_get_status_code(client);
-            // if (status_code == 200)
-            // {
-            //     ESP_LOGI(TAG, "HTTP GET Status = %d, content_length = %llu", status_code, esp_http_client_get_content_length(client));
-
-            //     char *response = malloc(esp_http_client_get_content_length(client) + 1);
-            //     if (response == NULL)
-            //     {
-            //         ESP_LOGE(TAG, "Failed to allocate memory for response buffer");
-            //         esp_http_client_cleanup(client);
-            //         vTaskDelay(pdMS_TO_TICKS(5000));
-            //         continue;
-            //     }
-
-            //     memset(response, 0, esp_http_client_get_content_length(client) + 1);
-            //     esp_http_client_read_response(client, response, esp_http_client_get_content_length(client));
-
-            //     cJSON *root = cJSON_Parse(response);
-            //     if (root == NULL)
-            //     {
-            //         ESP_LOGE(TAG, "Failed to parse JSON response");
-            //         free(response);
-            //         esp_http_client_cleanup(client);
-            //         vTaskDelay(pdMS_TO_TICKS(5000));
-            //         continue;
-            //     }
-
-            //     cJSON *result = cJSON_GetObjectItem(root, "result");
-            //     if (cJSON_IsArray(result))
-            //     {
-            //         int array_size = cJSON_GetArraySize(result);
-            //         for (int i = 0; i < array_size; ++i)
-            //         {
-            //             cJSON *update = cJSON_GetArrayItem(result, i);
-            //             cJSON *message = cJSON_GetObjectItem(update, "message");
-            //             if (message && cJSON_HasObjectItem(message, "text"))
-            //             {
-            //                 cJSON *chat_id = cJSON_GetObjectItem(message, "chat");
-            //                 cJSON *text = cJSON_GetObjectItem(message, "text");
-            //                 if (strcmp(TELEGRAM_CHAT_ID, chat_id->valuestring) == 0)
-            //                 {
-            //                     ESP_LOGI(TAG, "Received message from Chat ID %s: %s", TELEGRAM_CHAT_ID, text->valuestring);
-            //                 }
-            //             }
-            //         }
-            //     }
-
-            //     cJSON_Delete(root);
-            //     free(response);
-            // }
-            // else
-            // {
-            //     ESP_LOGE(TAG, "HTTP GET Status = %d", status_code);
-            // }
-
-            esp_http_client_cleanup(client);
+            ESP_LOGI(TAG, "HTTPS Status = %d, content_length = %lld",
+                     esp_http_client_get_status_code(client),
+                     esp_http_client_get_content_length(client));
         }
-        vTaskDelay(pdMS_TO_TICKS(10000)); // Задержка перед следующим запросом
+        else
+        {
+            ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
+        }
+
+        // Освобождение ресурсов клиента
+        esp_http_client_cleanup(client);
+
+        // Задержка перед следующим запросом (10 секунд)
+        vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
 
+/**
+ * @brief Вычисляет процент свободной памяти в куче.
+ *
+ * Эта функция возвращает процент свободной памяти из общей памяти,
+ * доступной в стандартной куче (MALLOC_CAP_DEFAULT).
+ *
+ * @return float Процент свободной памяти (0.0 до 100.0).
+ */
 static float esp_heap_free_percent()
 {
-    return 100.0 * ((float)heap_caps_get_free_size(MALLOC_CAP_DEFAULT) / (float)heap_caps_get_total_size(MALLOC_CAP_DEFAULT));
+    return 100.0 * ((float)heap_caps_get_free_size(MALLOC_CAP_DEFAULT) /
+                    (float)heap_caps_get_total_size(MALLOC_CAP_DEFAULT));
 }
 
 // Функция калибровки длины шторы
@@ -1013,35 +1006,98 @@ static void onStop()
     }
 }
 
+/**
+ * @brief Функция обратного вызова для уведомления о синхронизации времени.
+ *
+ * Эта функция вызывается после успешной синхронизации времени с SNTP сервером.
+ * Здесь можно добавить код для обработки времени, например, его вывод или
+ * выполнение каких-либо действий по расписанию.
+ */
+void time_sync_cb(struct timeval *tv)
+{
+    const char *TAG = "time_sync_cb";
+    ESP_LOGI(TAG, "Time synchronized: %lld seconds since epoch", tv->tv_sec);
+
+    time_sync = true;
+}
+
+/**
+ * @brief Запускает синхронизацию времени с SNTP сервером.
+ *
+ * Эта функция устанавливает указанный часовой пояс и инициализирует
+ * синхронизацию времени через SNTP, включая конфигурацию SNTP сервера.
+ *
+ * @param tz Указатель на строку с названием часового пояса (например, "UTC" или "Europe/Moscow").
+ */
 static void time_sync_start(const char *tz)
 {
     const char *tag = "time_sync_start";
     ESP_LOGI(tag, "started");
-    // Выбираем часовой пояс и запускаем синхронизацию времени с SNTP
-    setenv("TZ", timezone, 1);
+
+    // Устанавливаем часовой пояс
+    setenv("TZ", tz, 1);
     tzset();
+
+    // Настройка режима синхронизации SNTP
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+
+    // Установка SNTP серверов
     esp_sntp_setservername(0, time_server1);
     esp_sntp_setservername(1, time_server2);
+
+    // Установка функции обратного вызова для уведомления о синхронизации времени
     sntp_set_time_sync_notification_cb(time_sync_cb);
+
+    // Инициализация SNTP
     esp_sntp_init();
 }
 
-/* Функция преобразования структуры статуса в json строку*/
+/**
+ * @brief Создает JSON-строку со статусом системы.
+ *
+ * Функция собирает информацию о прошивке, времени, состоянии,
+ * и других параметрах системы в формате JSON.
+ *
+ * @return Указатель на строку JSON. Должен быть освобожден вызовом free().
+ *         Возвращает NULL в случае ошибки при создании JSON-объекта.
+ */
 static char *mqttStatusJson()
 {
     char *str = NULL;
 
     cJSON *json = cJSON_CreateObject();
+    if (json == NULL)
+    {
+        return NULL; // Обработка ошибки при создании объекта JSON
+    }
 
-    cJSON_AddStringToObject(json, "Firmware name", app_name);
-    cJSON_AddStringToObject(json, "Firmware version", app_version);
-    cJSON_AddStringToObject(json, "Firmware build date", app_date);
-    cJSON_AddStringToObject(json, "Firmware build time", app_time);
+    // Массив, содержащий ключи и соответствующие значения для прошивки
+    struct
+    {
+        const char *key;
+        const char *value;
+    } firmwarePairs[] = {
+        {"Firmware name", app_name},
+        {"Firmware version", app_version},
+        {"Firmware build date", app_date},
+        {"Firmware build time", app_time},
+    };
 
+    // Добавление информации о прошивке в JSON
+    for (size_t i = 0; i < sizeof(firmwarePairs) / sizeof(firmwarePairs[0]); i++)
+    {
+        cJSON_AddStringToObject(json, firmwarePairs[i].key, firmwarePairs[i].value);
+    }
+
+    // Получение локального времени
     char *tmp = _timestr("%d.%m.%Y %H:%M:%S", time(NULL), 32);
-    cJSON_AddStringToObject(json, "local_time", tmp);
-    vPortFree(tmp);
+    if (tmp != NULL)
+    {
+        cJSON_AddStringToObject(json, "local_time", tmp);
+        vPortFree(tmp);
+    }
+
+    // Остальная информация о статусе системы
     cJSON_AddStringToObject(json, "last_started", last_started);
     cJSON_AddNumberToObject(json, "working_time", working_time);
     cJSON_AddStringToObject(json, "last_ow_updated", last_ow_updated);
@@ -1065,24 +1121,52 @@ static char *mqttStatusJson()
     return str;
 }
 
-/* Функция преобразования структуры параметров системы в json строку*/
+/**
+ * @brief Создает JSON-строку с данными системы.
+ *
+ * Функция собирает информацию о системе, такую как SSID, пароль, локальный IP,
+ * страну, город, временную зону, сервер времени, ключ O/W и токен Telegram,
+ * а также другую информацию в формате JSON.
+ *
+ * @return Указатель на строку JSON. Должен быть освобожден вызовом free().
+ *         Возвращает NULL в случае ошибки при создании JSON-объекта.
+ */
 static char *mqttSystemJson()
 {
     char *str = NULL;
 
+    // Массив, содержащий ключи и соответствующие значения
+    struct
+    {
+        const char *key;   ///< Ключ для JSON-объекта
+        const char *value; ///< Значение для JSON-объекта
+    } pairs[] = {
+        {"ssid", ssid},
+        {"password", password},
+        {"local ip", ip},
+        {"country", country},
+        {"city", city},
+        {"timezone", timezone},
+        {"time_server1", time_server1},
+        {"time_server2", time_server2},
+        {"ow_key", ow_key},
+        {"tg_bot_token", tg_bot_token},
+        {"last_system_updated", last_updated},
+        {"update_url", update_url},
+    };
+
     cJSON *json = cJSON_CreateObject();
-    cJSON_AddStringToObject(json, "ssid", ssid);
-    cJSON_AddStringToObject(json, "password", password);
-    cJSON_AddStringToObject(json, "local ip", ip);
-    cJSON_AddStringToObject(json, "country", country);
-    cJSON_AddStringToObject(json, "city", city);
-    cJSON_AddStringToObject(json, "timezone", timezone);
-    cJSON_AddStringToObject(json, "time_server1", time_server1);
-    cJSON_AddStringToObject(json, "time_server2", time_server2);
-    cJSON_AddStringToObject(json, "ow_key", ow_key);
-    cJSON_AddStringToObject(json, "tg_key", tg_key);
-    cJSON_AddStringToObject(json, "last_system_updated", last_updated);
-    cJSON_AddStringToObject(json, "update_url", update_url);
+    if (json == NULL)
+    {
+        return NULL; // Обработка ошибки при создании объекта JSON
+    }
+
+    // Добавление пар "ключ-значение" в JSON
+    for (size_t i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++)
+    {
+        cJSON_AddStringToObject(json, pairs[i].key, pairs[i].value);
+    }
+
     cJSON_AddNumberToObject(json, "free_heap", esp_heap_free_percent());
 
     str = cJSON_Print(json);
@@ -1090,7 +1174,6 @@ static char *mqttSystemJson()
 
     return str;
 }
-
 /* Функция записи uint8 NVS */
 static esp_err_t nvs_write_u8(char *key, uint8_t val)
 {
@@ -1589,9 +1672,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 if (event->data_len > 0)
                 {
-                    tg_key = _string(data);
+                    tg_bot_token = _string(data);
                     // Сохраняем новое значение
-                    nvs_write_str("tg_key", tg_key);
+                    nvs_write_str("tg_bot_token", tg_bot_token);
 
                     // Публикуем системный топик
                     char *str = mqttSystemJson();
@@ -2248,14 +2331,6 @@ static void ota_task(void *param)
     }
 }
 
-/* Коллбек синхронизации времени по SNTP*/
-static void time_sync_cb(struct timeval *tv)
-{
-    const char *tag = "time_sync_cb";
-    ESP_LOGI(tag, "Time is set from custom code: %lld", tv->tv_sec);
-    time_sync = true;
-}
-
 /* Управление вращением мотора */
 static void move_task(void *param)
 {
@@ -2812,18 +2887,18 @@ void app_main(void)
             ESP_LOGW(tag, "Openweather api key reading error (%s). Set default key: %s", esp_err_to_name(err), ow_key);
         }
         // Читаем Telegram api key
-        err = nvs_get_str(nvs_handle, "tg_key", NULL, &size);
+        err = nvs_get_str(nvs_handle, "tg_bot_token", NULL, &size);
         if (err == ESP_OK)
         {
             str = malloc(size);
-            err = nvs_get_str(nvs_handle, "tg_key", str, &size);
-            tg_key = _string(str);
-            ESP_LOGI(tag, "Telegram api key reading success: %s", tg_key);
+            err = nvs_get_str(nvs_handle, "tg_bot_token", str, &size);
+            tg_bot_token = _string(str);
+            ESP_LOGI(tag, "Telegram api key reading success: %s", tg_bot_token);
         }
         else
         {
-            tg_key = _string(TELEGRAM_BOT_TOKEN);
-            ESP_LOGW(tag, "Telegram api key reading error (%s). Set default key: %s", esp_err_to_name(err), tg_key);
+            tg_bot_token = _string(TELEGRAM_BOT_TOKEN);
+            ESP_LOGW(tag, "Telegram api key reading error (%s). Set default key: %s", esp_err_to_name(err), tg_bot_token);
         }
         // Читаем url сервера 1 синхронизации времени
         err = nvs_get_str(nvs_handle, "time_server1", NULL, &size);
@@ -2955,7 +3030,7 @@ void app_main(void)
     xTaskCreate(init_btn_task, "init_btn_task", 2048, NULL, 3, NULL);
     xTaskCreate(openweather_task, "openweather_task", 8000, NULL, 3, NULL);
     xTaskCreate(publish_task, "publish_task", 4096, NULL, 3, NULL);
-    xTaskCreate(telegram_get_message_task, "telegram_get_message_task", 4096, NULL, 3, NULL);
+    xTaskCreate(http_request_task, "http_request_task", 8192, NULL, 5, NULL);
 
     // Создаем программный таймер с периодом 1 секунда
     timer1_handle = xTimerCreate(
