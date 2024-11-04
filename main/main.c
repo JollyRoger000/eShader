@@ -515,25 +515,6 @@ httpd_handle_t start_webserver(void)
     return server; // Возврат дескриптора сервера
 }
 
-// char *_string(const char *source)
-// {
-//     const char *tag = "_string";
-//     if (source)
-//     {
-//         uint32_t len = strlen(source);
-
-//         char *ret = (char *)malloc(len + 1);
-//         if (ret == NULL)
-//         {
-//             ESP_LOGE(tag, "Failed to create string: out of memory!");
-//             return NULL;
-//         }
-//         memset(ret, 0, len + 1);
-//         strcpy(ret, source);
-//         return ret;
-//     };
-//     return NULL;
-// }
 
 /**
  * @brief Создает дублирующую строку из переданного источника.
@@ -570,87 +551,197 @@ char *_string(const char *source)
     return NULL;
 }
 
+/**
+ * @brief Форматирует строку с переменным числом аргументов.
+ *
+ * Эта функция принимает формат строки и переменное количество аргументов,
+ * создает строку с отформатированным содержимым и возвращает указатель на неё.
+ * Если произойдет ошибка при выделении памяти или форматировании строки,
+ * функция вернет NULL. Также будет выведено сообщение об ошибке в лог.
+ *
+ * @param format Указатель на строку формата.
+ * @param ... Переменное количество аргументов для форматирования.
+ * @return Указатель на отформатированную строку при успехе; NULL в случае ошибки.
+ */
 char *_stringf(const char *format, ...)
 {
     const char *tag = "_stringf";
     char *ret = NULL;
+
     if (format != NULL)
     {
-        // get the list of arguments
         va_list args1, args2;
         va_start(args1, format);
         va_copy(args2, args1);
-        // calculate length of resulting string
+
+        // Вычисление длины результирующей строки
         int len = vsnprintf(NULL, 0, format, args1);
         va_end(args1);
-        // allocate memory for string
-        if (len > 0)
+
+        if (len > 0) // Убедиться, что длина больше нуля
         {
             ret = (char *)malloc(len + 1);
             if (ret != NULL)
             {
-                memset(ret, 0, len + 1);
                 vsnprintf(ret, len + 1, format, args2);
             }
             else
             {
                 ESP_LOGE(tag, "Failed to format string: out of memory!");
-            };
-        };
+            }
+        }
+        else
+        {
+            ESP_LOGE(tag, "Formatting error, vsnprintf returned length: %d", len);
+        }
         va_end(args2);
-    };
+    }
+    else
+    {
+        ESP_LOGE(tag, "Format string is NULL.");
+    }
+
     return ret;
 }
 
+/**
+ * @brief Создает дублирующую строку из переданной строки ограниченной длины.
+ *
+ * Эта функция выделяет память для новой строки и копирует в нее
+ * содержимое переданной строки, не превышая заданную длину.
+ * Если переданная строка является NULL или выделение памяти неудачно,
+ * функция вернет NULL. В случае ошибки будет выведено сообщение
+ * об ошибке в лог.
+ *
+ * @param source Указатель на строку, которую необходимо скопировать.
+ * @param len Максимальная длина для копирования.
+ * @return Указатель на новую строку при успехе; NULL в случае ошибки.
+ */
 char *_stringl(const char *source, const uint32_t len)
 {
     const char *tag = "_stringl";
     if (source)
     {
-        char *ret = (char *)malloc(len + 1);
+        // Проверка длины исходной строки
+        size_t sourceLen = strlen(source);
+        size_t copyLen = len < sourceLen ? len : sourceLen; // должна быть длина к копированию
+        char *ret = (char *)malloc(copyLen + 1);
+
         if (ret == NULL)
         {
             ESP_LOGE(tag, "Failed to create string: out of memory!");
             return NULL;
         }
-        memset(ret, 0, len + 1);
-        strncpy(ret, source, len);
+
+        // Копируем и гарантируем завершение строки нулем
+        strncpy(ret, source, copyLen);
+        ret[copyLen] = '\0'; // Нужное завершение строки
+
         return ret;
-    };
+    }
+
+    ESP_LOGE(tag, "Source string is NULL.");
     return NULL;
 }
 
+/**
+ * @brief Преобразует значение времени в строку заданного формата.
+ *
+ * Эта функция принимает значение времени в формате `time_t` и
+ * форматную строку, а затем преобразует время в строку, используя
+ * указанный формат. Функция возвращает указатель на созданную строку,
+ * выделенную с использованием функции `_string`, или NULL в случае ошибки.
+ *
+ * @param format Формат строки для преобразования времени.
+ * @param value Значение времени в формате `time_t`.
+ * @param bufsize Размер буфера для временной строки.
+ * @return Указатель на отформатированную строку при успехе; NULL в случае ошибки.
+ */
 char *_timestr(const char *format, time_t value, int bufsize)
 {
+    const char *tag = "_timestr";
+
+    if (bufsize <= 0)
+    {
+        ESP_LOGE(tag, "Buffer size must be greater than zero.");
+        return NULL;
+    }
+
     struct tm timeinfo;
-    localtime_r(&value, &timeinfo);
+    if (localtime_r(&value, &timeinfo) == NULL)
+    {
+        ESP_LOGE(tag, "Failed to convert time value.");
+        return NULL;
+    }
+
     char buffer[bufsize];
     memset(buffer, 0, sizeof(buffer));
-    strftime(buffer, sizeof(buffer), format, &timeinfo);
+
+    if (strftime(buffer, sizeof(buffer), format, &timeinfo) == 0)
+    {
+        ESP_LOGE(tag, "Failed to format time string.");
+        return NULL;
+    }
+
     return _string(buffer);
 }
 
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <esp_log.h>
+
+/**
+ * @brief Форматирует строку в массив символов с использованием переменного числа аргументов.
+ *
+ * Эта функция принимает буфер и форматную строку, а затем формирует строку,
+ * используя переменные аргументы. Если буфер недостаточно велик для хранения
+ * отформатированной строки, функция возвращает отрицательное значение,
+ * и сообщение об ошибке будет записано в журнал.
+ *
+ * @param buffer Указатель на буфер, в который будет записана отформатированная строка.
+ * @param buffer_size Размер переданного буфера.
+ * @param format Формат, который будет использоваться для форматирования строки.
+ * @param ... Переменное количество аргументов для форматирования.
+ * @return Количество символов, записанных в буфер, или отрицательное значение при ошибке.
+ */
 uint16_t format_string(char *buffer, uint16_t buffer_size, const char *format, ...)
 {
     const char *tag = "format_string";
     uint16_t ret = 0;
-    if (buffer && format)
+
+    if (!buffer || !format || buffer_size == 0)
     {
-        memset(buffer, 0, buffer_size);
-        // get the list of arguments
-        va_list args;
-        va_start(args, format);
-        uint16_t len = vsnprintf(NULL, 0, format, args);
-        // format string
-        if (len + 1 > buffer_size)
-        {
-            ret = -len;
-            ESP_LOGE(tag, "Buffer %d bytes too small to hold formatted string, %d bytes needed", buffer_size, len + 1);
-        };
-        ret = vsnprintf(buffer, buffer_size, format, args);
-        va_end(args);
-    };
-    return ret;
+        ESP_LOGE(tag, "Invalid buffer or format string.");
+        return 0; // Неверный ввод
+    }
+
+    // Получаем список аргументов
+    va_list args;
+    va_start(args, format);
+
+    // Определяем необходимую длину буфера
+    int len = vsnprintf(NULL, 0, format, args);
+    va_end(args); // Завершаем работу с args, чтобы избежать ошибок
+
+    if (len < 0)
+    {
+        ESP_LOGE(tag, "Error in formatting string.");
+        return 0; // Произошла ошибка
+    }
+
+    if (len + 1 > buffer_size) // +1 для нулевого символа
+    {
+        ESP_LOGE(tag, "Buffer %d bytes too small to hold formatted string, %d bytes needed", buffer_size, len + 1);
+        return 0; // Буфер слишком мал
+    }
+
+    va_start(args, format); // Снова инициализируем список аргументов
+    ret = vsnprintf(buffer, buffer_size, format, args);
+    va_end(args); // Завершаем работу с args
+
+    return ret > 0 ? ret : 0; // Возвращаем положительное значение или 0 при неудаче
 }
 
 // Функция для отправки сообщения в Telegram
