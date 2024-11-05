@@ -2840,13 +2840,27 @@ static void handler_on_wifi_connect(void *esp_netif, esp_event_base_t event_base
     }
 }
 
+/**
+ * @brief Обработчик события получения IP-адреса.
+ *
+ * Эта функция вызывается, когда устройство получает IPv4-адрес после подключения
+ * к точке доступа. Она сбрасывает счетчик попыток подключения и
+ * логирует информацию о полученном IP-адресе и интерфейсе.
+ *
+ * @param arg Указатель на произвольные данные (не используется).
+ * @param event_base Базовое событие (для определения типа события).
+ * @param event_id Идентификатор события (определяет конкретное событие).
+ * @param event_data Указатель на данные события, содержащие информацию о полученном IP (тип данных: ip_event_got_ip_t).
+ */
 static void handler_on_sta_got_ip(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
-    const char *tag = "handler_on_sta_got_ip";
-    connect_retry = 0;
-    ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+    const char *tag = "handler_on_sta_got_ip";                  // Тег для логирования
+    connect_retry = 0;                                          // Сбрасываем счетчик попыток подключения
+    ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data; // Приводим указатель на данные события
 
-    ESP_LOGI(tag, "Got IPv4 event: Interface \"%s\" address: " IPSTR, esp_netif_get_desc(event->esp_netif), IP2STR(&event->ip_info.ip));
+    // Логируем информацию о полученном IP-адресе и интерфейсе
+    ESP_LOGI(tag, "Got IPv4 event: Interface \"%s\" address: " IPSTR,
+             esp_netif_get_desc(event->esp_netif), IP2STR(&event->ip_info.ip));
 }
 
 /* Функция инциализации WiFi*/
