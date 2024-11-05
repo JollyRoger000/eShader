@@ -1339,25 +1339,38 @@ static esp_err_t nvs_write_str(const char *key, const char *val)
 }
 
 
-// Функция подписки на топики
-static bool mqttSubscribe(esp_mqtt_client_handle_t client, char *topic, int qos)
+/**
+ * @brief Подписывается на указанный MQTT-топик.
+ *
+ * Эта функция подписывается на заданный MQTT-топик с указанным уровнем качества обслуживания (QoS).
+ * Возвращает true при успешной подписке, иначе возвращает false.
+ *
+ * @param client Указатель на MQTT-клиент.
+ * @param topic Указатель на строку, представляющую топик для подписки.
+ * @param qos Уровень качества обслуживания для подписки (0, 1 или 2).
+ * @return true Если подписка выполнена успешно, иначе false.
+ */
+static bool mqttSubscribe(esp_mqtt_client_handle_t client, const char *topic, int qos)
 {
-    char *tag = "mqttSubscribe";
+    const char *tag = "mqttSubscribe";
 
+    // Проверка аргументов на корректность
     if (client == NULL || topic == NULL)
+    {
+        ESP_LOGE(tag, "Invalid arguments: client or topic is NULL");
         return false;
+    }
+
+    // Подписка на указанное топик
+    if (esp_mqtt_client_subscribe(client, topic, qos) != -1)
+    {
+        ESP_LOGI(tag, "Subscribed to topic %s with QoS %d", topic, qos);
+        return true;
+    }
     else
     {
-        if (esp_mqtt_client_subscribe(client, topic, qos) != -1)
-        {
-            ESP_LOGI(tag, "Subscribed to topic %s", topic);
-            return true;
-        }
-        else
-        {
-            ESP_LOGE(tag, "Failed to subscribe to topic %s", topic);
-            return false;
-        }
+        ESP_LOGE(tag, "Failed to subscribe to topic %s", topic);
+        return false;
     }
 }
 
