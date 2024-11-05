@@ -1374,22 +1374,36 @@ static bool mqttSubscribe(esp_mqtt_client_handle_t client, const char *topic, in
     }
 }
 
-// Функция публикации топика
+/**
+ * @brief Публикует сообщение в указанную MQTT тему.
+ *
+ * Эта функция отправляет сообщение с заданными данными в указанную тему,
+ * используя предоставленный дескриптор MQTT-клиента. Функция логирует ошибку,
+ * если какие-либо аргументы равны NULL или если публикация не удалась.
+ *
+ * @param client Дескриптор MQTT-клиента, используемого для публикации.
+ * @param topic Тема, в которую будет опубликовано сообщение.
+ * @param data Содержимое сообщения для публикации.
+ * @param qos Уровень качества обслуживания для сообщения (0, 1 или 2).
+ * @param retain Флаг удержания, указывающий, следует ли удерживать сообщение (0 или 1).
+ * @return true Если сообщение успешно опубликовано, false в случае ошибок.
+ */
 static bool mqttPublish(esp_mqtt_client_handle_t client, char *topic, char *data, int qos, int retain)
 {
     char *tag = "mqttPublish";
 
+    // Проверка на NULL аргументы
     if (client == NULL || topic == NULL || data == NULL)
     {
         ESP_LOGE(tag, "NULL arguments");
         return false;
     }
-
     else
     {
+        // Публикация сообщения в MQTT тему
         if (esp_mqtt_client_publish(client, topic, data, strlen(data), qos, retain) != -1)
         {
-            ESP_LOGI(tag, "Published to topic %s", topic);
+            ESP_LOGI(tag, "Publiched to topic %s", topic);
             return true;
         }
         else
