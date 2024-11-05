@@ -46,6 +46,8 @@ extern const uint8_t ss_pem_end[] asm("_binary_sunrise_sunset_org_pem_end");
 
 #define DEFAULT_MAX_TIME_SYNC_WAITING 10
 #define DEFAULT_MAX_STEPS 30000
+#define MAX_RECONNECT_ATTEMPTS 5 /**< Максимальное количество попыток подключения к MQTT-брокеру. */
+#define RECONNECT_DELAY_MS 1000 /**< Задержка между попытками повторного подключения в миллисекундах. */
 
 #define WIFI_START_BIT BIT0     // Бит запуска подключения к WiFi
 #define WIFI_DONE_BIT BIT1      // Бит успешного подключения к WiFi
@@ -1527,6 +1529,43 @@ static void mqtt_start(void)
     }
 }
 
+/**
+ * @brief Попытка повторного подключения к MQTT-брокеру.
+ *
+ * Эта функция проверяет текущее состояние подключения. Если клиент
+ * уже подключен, возвращается true. В противном случае происходит
+ * попытка подключения к брокеру. При успешном подключении флаг
+ * `mqttConnected` устанавливается в true.
+ *
+ * @return true Если подключение успешно.
+ * @return false Если подключение не удалось.
+ */
+bool mqtt_reconnect()
+{
+    // Проверьте, соединены ли вы уже
+    if (mqttConnected)
+    {
+        ESP_LOGI("MQTT_RECONNECT", "Already connected to MQTT broker.");
+        return true;
+    }
+
+    // Попробуйте подключиться к MQTT-брокеру
+    esp_err_t ret = esp_mqtt_client_start(mqttClient);
+    if (ret == ESP_OK)
+    {
+        mqttConnected = true; // Установите флаг соединения
+        ESP_LOGI("MQTT_RECONNECT", "Successfully connected to MQTT broker.");
+        return true;
+    }
+    else
+    {
+        // Логируем ошибку подключения
+        ESP_LOGE("MQTT_RECONNECT", "Failed to start MQTT client: %s", esp_err_to_name(ret));
+        return false;
+    }
+}
+
+
 /* Функция обработчик сообщений MQTT */
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
@@ -2032,23 +2071,40 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             ESP_LOGI(tag, "Last tls stack error number: 0x%x", event->error_handle->esp_tls_stack_err);
             ESP_LOGI(tag, "Last captured errno : %d (%s)", event->error_handle->esp_transport_sock_errno,
                      strerror(event->error_handle->esp_transport_sock_errno));
-            // Возможно, стоит попробовать повторное подключение здесь
             break;
 
         case MQTT_ERROR_TYPE_CONNECTION_REFUSED:
             ESP_LOGI(tag, "Connection refused error: 0x%x", event->error_handle->connect_return_code);
-            // Возможно, попытаться восстановить соединение или уведомить пользователя/систему
             break;
 
         default:
             ESP_LOGW(tag, "Unknown error type: 0x%x", event->error_handle->error_type);
-            // Здесь тоже можно рассмотреть необходимость перезагрузки или повторного подключения
             break;
         }
 
-        // Вместо перезагрузки добавить логику обработки
-        // например, попытка повторного подключения с небольшими задержками.
-        esp_restart(); // Можно закомментировать, если хотите попробовать восстановление
+        /** @brief Логика повторного подключения к MQTT-брокеру.
+         *  Коды ошибок MQTT логируются, после чего осуществляется
+         *  попытка повторного подключения. После достижения максимального
+         *  количества попыток, устройство будет перезагружено.
+         */
+        for (int attempt = 0; attempt < MAX_RECONNECT_ATTEMPTS; ++attempt)
+        {
+            ESP_LOGI(tag, "Attempting to reconnect... (%d/%d)", attempt + 1, MAX_RECONNECT_ATTEMPTS);
+
+            // Попытка повторного подключения
+            if (mqtt_reconnect()) // Предполагается, что эта функция возвращает true при успешном подключении
+            {
+                ESP_LOGI(tag, "Reconnected successfully");
+                return; // Завершим обработку, если подключение успешно
+            }
+
+            // Если не удалось, ждем перед следующей попыткой
+            vTaskDelay(pdMS_TO_TICKS(RECONNECT_DELAY_MS)); // Пауза перед следующей попыткой
+        }
+
+        // Если после всех попыток соединение не удалось, перезагружаем устройство
+        ESP_LOGE(tag, "Failed to reconnect after %d attempts. Restarting...", MAX_RECONNECT_ATTEMPTS);
+        esp_restart();
         break;
 
     default:
