@@ -2024,22 +2024,31 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
     case MQTT_EVENT_ERROR:
         ESP_LOGI(tag, "MQTT_EVENT_ERROR");
-        if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT)
+
+        switch (event->error_handle->error_type)
         {
+        case MQTT_ERROR_TYPE_TCP_TRANSPORT:
             ESP_LOGI(tag, "Last error code reported from esp-tls: 0x%x", event->error_handle->esp_tls_last_esp_err);
             ESP_LOGI(tag, "Last tls stack error number: 0x%x", event->error_handle->esp_tls_stack_err);
             ESP_LOGI(tag, "Last captured errno : %d (%s)", event->error_handle->esp_transport_sock_errno,
                      strerror(event->error_handle->esp_transport_sock_errno));
-        }
-        else if (event->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED)
-        {
+            // Возможно, стоит попробовать повторное подключение здесь
+            break;
+
+        case MQTT_ERROR_TYPE_CONNECTION_REFUSED:
             ESP_LOGI(tag, "Connection refused error: 0x%x", event->error_handle->connect_return_code);
-        }
-        else
-        {
+            // Возможно, попытаться восстановить соединение или уведомить пользователя/систему
+            break;
+
+        default:
             ESP_LOGW(tag, "Unknown error type: 0x%x", event->error_handle->error_type);
+            // Здесь тоже можно рассмотреть необходимость перезагрузки или повторного подключения
+            break;
         }
-        esp_restart();
+
+        // Вместо перезагрузки добавить логику обработки
+        // например, попытка повторного подключения с небольшими задержками.
+        esp_restart(); // Можно закомментировать, если хотите попробовать восстановление
         break;
 
     default:
