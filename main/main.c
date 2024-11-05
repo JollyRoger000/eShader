@@ -47,7 +47,7 @@ extern const uint8_t ss_pem_end[] asm("_binary_sunrise_sunset_org_pem_end");
 #define DEFAULT_MAX_TIME_SYNC_WAITING 10
 #define DEFAULT_MAX_STEPS 30000
 #define MAX_RECONNECT_ATTEMPTS 5 /**< Максимальное количество попыток подключения к MQTT-брокеру. */
-#define RECONNECT_DELAY_MS 1000 /**< Задержка между попытками повторного подключения в миллисекундах. */
+#define RECONNECT_DELAY_MS 1000  /**< Задержка между попытками повторного подключения в миллисекундах. */
 
 #define WIFI_START_BIT BIT0     // Бит запуска подключения к WiFi
 #define WIFI_DONE_BIT BIT1      // Бит успешного подключения к WiFi
@@ -1565,7 +1565,6 @@ bool mqtt_reconnect()
     }
 }
 
-
 /* Функция обработчик сообщений MQTT */
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
@@ -1633,9 +1632,14 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         break;
 
     case MQTT_EVENT_DISCONNECTED:
-        mqttConnected = false;
-        ESP_LOGI(tag, "MQTT_EVENT_DISCONNECTED");
+        mqttConnected = false; // Сброс флага подключения
+        ESP_LOGI(tag, "MQTT_EVENT_DISCONNECTED. Attempting to reconnect...");
 
+        // Попробуем выполнить повторное подключение
+        if (!mqtt_reconnect())
+        {
+            ESP_LOGE(tag, "Reconnection failed. Will continue to attempt to reconnect.");
+        }
         break;
 
     case MQTT_EVENT_SUBSCRIBED:
@@ -2767,27 +2771,43 @@ static void init_btn_task(void *param)
     vTaskDelete(NULL);
 }
 
+/**
+ * @brief Обработчик события отключения от Wi-Fi.
+ *
+ * Эта функция вызывается, когда устройство отключается от сети Wi-Fi.
+ * Она пытается подключиться к Wi-Fi, если количество попыток подключения
+ * не превышает максимальное значение.
+ *
+ * @param arg Указатель на произвольные данные (не используется).
+ * @param event_base Базовое событие (для определения типа события).
+ * @param event_id Идентификатор события (определяет конкретное событие).
+ * @param event_data Указатель на данные события (может содержать дополнительную информацию).
+ */
 static void handler_on_wifi_disconnect(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
-    const char *tag = "handler_on_wifi_disconnect";
-    connect_retry++;
+    const char *tag = "handler_on_wifi_disconnect"; // Тег для логирования
+    connect_retry++;                                // Увеличиваем число попыток подключения
+
     if (connect_retry > max_connect_retry)
     {
         ESP_LOGI(tag, "WiFi Connect failed %d times, stop reconnect.", connect_retry);
 
+        // Отменяем подписку на события
         ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &handler_on_wifi_disconnect));
         ESP_ERROR_CHECK(esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, &handler_on_sta_got_ip));
         ESP_ERROR_CHECK(esp_event_handler_unregister(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &handler_on_wifi_connect));
 
-        return;
+        return; // Выходим из функции, если максимальное количество попыток достигнуто
     }
+
     ESP_LOGI(tag, "Wi-Fi disconnected, trying to reconnect...");
-    esp_err_t err = esp_wifi_connect();
+    esp_err_t err = esp_wifi_connect(); // Пытаемся подключиться к Wi-Fi
     if (err == ESP_ERR_WIFI_NOT_STARTED)
     {
-        return;
+        return; // Возвращаемся, если Wi-Fi не был запущен
     }
-    ESP_ERROR_CHECK(err);
+
+    ESP_ERROR_CHECK(err); // Проверяем наличие ошибки
 }
 
 static void handler_on_wifi_connect(void *esp_netif, esp_event_base_t event_base, int32_t event_id, void *event_data)
