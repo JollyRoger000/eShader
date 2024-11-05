@@ -1338,7 +1338,6 @@ static esp_err_t nvs_write_str(const char *key, const char *val)
     return err; // Возврат результата операции
 }
 
-
 /**
  * @brief Подписывается на указанный MQTT-топик.
  *
@@ -1414,31 +1413,62 @@ static bool mqttPublish(esp_mqtt_client_handle_t client, char *topic, char *data
     }
 }
 
+/**
+ * @brief Задача для периодической публикации статуса в MQTT.
+ *
+ * Эта функция выполняется в виде задачи FreeRTOS и предназначена для
+ * периодической публикации статуса в определённую MQTT тему. Она проверяет
+ * подключение к MQTT по флагу `mqttConnected`, генерирует статус в формате JSON
+ * и вызывает функцию `mqttPublish`, чтобы отправить сообщение.
+ * После публикации выделенная память для строки освобождается.
+ *
+ * @param params Указатель на параметры задачи (не используется).
+ */
 static void publish_task(void *params)
 {
     const char *tag = "publish_task";
+
     while (true)
     {
+        // Проверка на подключение к MQTT
         if (mqttConnected)
         {
+            // Генерация статуса в формате JSON
             char *str = mqttStatusJson();
+
+            // Публикация статуса в MQTT
             mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+
+            // Освобождение памяти, если строка не NULL
             if (str != NULL)
                 vPortFree(str);
         }
+
+        // Задержка перед следующей публикацией (60 секунд)
         vTaskDelay(pdMS_TO_TICKS(60000));
     }
 }
-/* Инициализация клиента MQTT */
+
+/**
+ * @brief Инициализация и запуск MQTT клиента.
+ *
+ * Эта функция отвечает за инициализацию MQTT клиента. Она получает MAC-адрес устройства,
+ * формирует уникальные темы на основе MAC-адреса и настраивает параметры подключения
+ * к брокеру MQTT, включая учетные данные и настройки "последней воли".
+ * Если инициализация проходит успешно, MQTT клиент запускается.
+ */
 static void mqtt_start(void)
 {
     char *tag = "mqtt_start";
     esp_err_t err;
     uint8_t mac[6];
+
+    // Получаем MAC-адрес устройства
     err = esp_efuse_mac_get_default(mac);
 
     if (err == ESP_OK)
     {
+        // Формирование уникального имени хоста и тем на основе MAC-адреса
         mqttHostname = _stringf("eShader-%x:%x:%x:%x:%x:%x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         mqttTopicCheckOnline = _stringf("%s/checkonline", mqttHostname);
         mqttTopicControl = _stringf("%s/control", mqttHostname);
@@ -1459,6 +1489,7 @@ static void mqtt_start(void)
         mqttTopicSystemCountry = _stringf("%s/system/country", mqttHostname);
         mqttTopicSystemCity = _stringf("%s/system/city", mqttHostname);
 
+        // Настройка параметров MQTT клиента
         esp_mqtt_client_config_t *mqtt_cfg;
         mqtt_cfg = (esp_mqtt_client_config_t *)calloc(1, sizeof(esp_mqtt_client_config_t));
         mqtt_cfg->broker.address.uri = mqttsServer;
@@ -1473,14 +1504,18 @@ static void mqtt_start(void)
         mqtt_cfg->session.last_will.msg_len = strlen("offline");
         mqtt_cfg->broker.verification.certificate = (const char *)wqtt_pem_start;
 
+        // Инициализация MQTT клиента
         mqttClient = esp_mqtt_client_init(mqtt_cfg);
         if (mqttClient != NULL)
         {
+            // Регистрация обработчика событий и запуск клиента
             esp_mqtt_client_register_event(mqttClient, ESP_EVENT_ANY_ID, mqtt_event_handler, mqttClient);
             esp_mqtt_client_start(mqttClient);
 
             ESP_LOGI(tag, "MQTT start. Hostname: %s", mqttHostname);
         }
+
+        // Освобождение памяти, если конфигурация не NULL
         if (mqtt_cfg != NULL)
         {
             vPortFree(mqtt_cfg);
@@ -1488,7 +1523,7 @@ static void mqtt_start(void)
     }
     else
     {
-        ESP_LOGE(tag, "get MAC address error");
+        ESP_LOGE(tag, "Ошибка получения MAC-адреса");
     }
 }
 
