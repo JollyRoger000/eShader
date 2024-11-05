@@ -2864,27 +2864,48 @@ static void handler_on_sta_got_ip(void *arg, esp_event_base_t event_base, int32_
 }
 
 /* Функция инциализации WiFi*/
+/**
+ * @brief Инициализация WiFi в режиме станция (STA).
+ *
+ * Эта функция создает сетевой интерфейс, настраивает WiFi с
+ * использованием значений по умолчанию, регистрирует обработчики
+ * событий для подключения и отключения, а также подключается
+ * к указанной беспроводной сети с использованием предоставленных
+ * SSID и пароля.
+ *
+ * @note Перед вызовом этой функции необходимо убедиться, что
+ *       переменные ssid и password корректно инициализированы.
+ *
+ * @param ssid Указатель на строку с SSID беспроводной сети.
+ * @param password Указатель на строку с паролем беспроводной сети.
+ *
+ * @return void
+ */
 static void wifi_init(void)
 {
     char *tag = "wifi_init";
-    ESP_LOGI(tag, "wifi initializating...");
+    ESP_LOGI(tag, "WiFi initializing...");
 
+    // Создание сетевого интерфейса
     esp_netif_create_default_wifi_sta();
 
-    /* Инициализируем WiFi значениями по умолчанию */
+    // Инициализация WiFi с конфигурацией по умолчанию
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    connect_retry = 0;
+    // Регистрация обработчиков событий
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &handler_on_wifi_disconnect, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &handler_on_sta_got_ip, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &handler_on_wifi_connect, NULL));
 
-    // Переводим ESP в режим STA и запускаем WiFi
-    memcpy(wifi_config.sta.password, password, password_size);
-    memcpy(wifi_config.sta.ssid, ssid, ssid_size);
+    // Настройка WiFi в режим STA
+    strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));             // безопасный копирующий метод
+    strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password)); // безопасный копирующий метод
+
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+
+    // Запуск WiFi и подключение
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_connect());
 }
