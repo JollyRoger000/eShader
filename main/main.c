@@ -2810,18 +2810,33 @@ static void handler_on_wifi_disconnect(void *arg, esp_event_base_t event_base, i
     ESP_ERROR_CHECK(err); // Проверяем наличие ошибки
 }
 
+/**
+ * @brief Обработчик события подключения к Wi-Fi.
+ *
+ * Эта функция вызывается, когда устройство успешно подключается
+ * к точке доступа (AP). Она выполняет необходимые действия после
+ * успешного подключения, такие как запуск синхронизации времени
+ * и проверка, нужно ли выполнять SmartConfig.
+ *
+ * @param esp_netif Указатель на сетевой интерфейс ESP (не используется).
+ * @param event_base Базовое событие (для определения типа события).
+ * @param event_id Идентификатор события (определяет конкретное событие).
+ * @param event_data Указатель на данные события (может содержать дополнительную информацию).
+ */
 static void handler_on_wifi_connect(void *esp_netif, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
-    const char *tag = "handler_on_wifi_connect";
-    ESP_LOGI(tag, "Connected to AP");
+    const char *tag = "handler_on_wifi_connect"; // Тег для логирования
+    ESP_LOGI(tag, "Connected to AP");            // Логируем успешное подключение к AP
 
     // Запускаем синхронизацию времени
     time_sync_start("MSK-3");
 
+    // Проверяем, загружены ли SSID и пароль
     if (!ssid_loaded || !password_loaded)
     {
+        // Если нет, создаем задачу для SmartConfig
         xTaskCreate(smartconfig_task, "smartconfig_task", 4096, NULL, 1, NULL);
-        xEventGroupSetBits(event_group, SC_START_BIT);
+        xEventGroupSetBits(event_group, SC_START_BIT); // Устанавливаем бит старта SmartConfig
     }
 }
 
