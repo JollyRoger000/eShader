@@ -187,7 +187,7 @@ static size_t password_size = 0;
 static char *mqttHostname = NULL;
 
 static void mqtt_start(void);
-static void time_sync_start(const char *tz);
+static void time_sync_start(void);
 static void time_sync_cb(struct timeval *tv);
 static void timer1_cb(TimerHandle_t pxTimer);
 static void onCalibrate();
@@ -894,35 +894,37 @@ void http_request_task(void *pvParameters)
 
     while (1)
     {
-        // Конфигурация HTTP-клиента
-        esp_http_client_config_t config = {
-            .url = url,
-            .event_handler = _http_event_handler,
-            .cert_pem = (char *)tg_org_pem_start,      // Указание сертификата для SSL
-            .transport_type = HTTP_TRANSPORT_OVER_SSL, // Использование SSL для запроса
-            .port = 443,                               // Порт для HTTPS
-        };
-
-        // Инициализация HTTP-клиента
-        esp_http_client_handle_t client = esp_http_client_init(&config);
-
-        // Выполнение HTTP-запроса
-        esp_err_t err = esp_http_client_perform(client);
-
-        if (err == ESP_OK)
+        if (time_sync)
         {
-            ESP_LOGI(TAG, "HTTPS Status = %d, content_length = %lld",
-                     esp_http_client_get_status_code(client),
-                     esp_http_client_get_content_length(client));
-        }
-        else
-        {
-            ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
-        }
+            // Конфигурация HTTP-клиента
+            esp_http_client_config_t config = {
+                .url = url,
+                .event_handler = _http_event_handler,
+                .cert_pem = (char *)tg_org_pem_start,      // Указание сертификата для SSL
+                .transport_type = HTTP_TRANSPORT_OVER_SSL, // Использование SSL для запроса
+                .port = 443,                               // Порт для HTTPS
+            };
 
-        // Освобождение ресурсов клиента
-        esp_http_client_cleanup(client);
+            // Инициализация HTTP-клиента
+            esp_http_client_handle_t client = esp_http_client_init(&config);
 
+            // Выполнение HTTP-запроса
+            esp_err_t err = esp_http_client_perform(client);
+
+            if (err == ESP_OK)
+            {
+                ESP_LOGI(TAG, "HTTPS Status = %d, content_length = %lld",
+                         esp_http_client_get_status_code(client),
+                         esp_http_client_get_content_length(client));
+            }
+            else
+            {
+                ESP_LOGE(TAG, "HTTP GET request failed: %s", esp_err_to_name(err));
+            }
+
+            // Освобождение ресурсов клиента
+            esp_http_client_cleanup(client);
+        }
         // Задержка перед следующим запросом (10 секунд)
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
@@ -1031,13 +1033,13 @@ void time_sync_cb(struct timeval *tv)
  *
  * @param tz Указатель на строку с названием часового пояса (например, "UTC" или "Europe/Moscow").
  */
-static void time_sync_start(const char *tz)
+static void time_sync_start()
 {
     const char *tag = "time_sync_start";
     ESP_LOGI(tag, "started");
 
     // Устанавливаем часовой пояс
-    setenv("TZ", tz, 1);
+    setenv("TZ", timezone, 1);
     tzset();
 
     // Настройка режима синхронизации SNTP
@@ -2829,7 +2831,7 @@ static void handler_on_wifi_connect(void *esp_netif, esp_event_base_t event_base
     ESP_LOGI(tag, "Connected to AP");            // Логируем успешное подключение к AP
 
     // Запускаем синхронизацию времени
-    time_sync_start("MSK-3");
+    time_sync_start();
 
     // Проверяем, загружены ли SSID и пароль
     if (!ssid_loaded || !password_loaded)
@@ -2863,25 +2865,27 @@ static void handler_on_sta_got_ip(void *arg, esp_event_base_t event_base, int32_
              esp_netif_get_desc(event->esp_netif), IP2STR(&event->ip_info.ip));
 }
 
-/* Функция инциализации WiFi*/
 /**
- * @brief Инициализация WiFi в режиме станция (STA).
+ * @brief Инициализация режима Wi-Fi станции и подключение к сети Wi-Fi.
  *
- * Эта функция создает сетевой интерфейс, настраивает WiFi с
- * использованием значений по умолчанию, регистрирует обработчики
- * событий для подключения и отключения, а также подключается
- * к указанной беспроводной сети с использованием предоставленных
- * SSID и пароля.
+ * Эта функция инициализирует Wi-Fi, устанавливает режим станции,
+ * конфигурирует его с заданными параметрами SSID и пароля,
+ * запускает Wi-Fi и выполняет подключение к сети.
  *
- * @note Перед вызовом этой функции необходимо убедиться, что
- *       переменные ssid и password корректно инициализированы.
- *
- * @param ssid Указатель на строку с SSID беспроводной сети.
- * @param password Указатель на строку с паролем беспроводной сети.
- *
- * @return void
+ * @param ssid Указатель на строку, представляющую имя сети Wi-Fi (SSID).
+ * @param password Указатель на строку, представляющую пароль к сети Wi-Fi.
  */
-static void wifi_init(void)
+/**
+ * @brief Инициализация режима Wi-Fi станции и подключение к заданной сети Wi-Fi.
+ *
+ * Эта функция инициализирует Wi-Fi, регистрирует обработчики событий
+ * для различных состояний подключения, настраивает Wi-Fi в режиме станции,
+ * устанавливает конфигурацию SSID и пароля, запускает Wi-Fi и выполняет подключение к сети.
+ *
+ * @param ssid Указатель на строку, представляющую имя сети Wi-Fi (SSID).
+ * @param password Указатель на строку, представляющую пароль к сети Wi-Fi.
+ */
+void wifi_init_sta()
 {
     char *tag = "wifi_init";
     ESP_LOGI(tag, "WiFi initializing...");
@@ -2889,25 +2893,40 @@ static void wifi_init(void)
     // Создание сетевого интерфейса
     esp_netif_create_default_wifi_sta();
 
-    // Инициализация WiFi с конфигурацией по умолчанию
+    // Инициализируем Wi-Fi
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    // Регистрация обработчиков событий
+    // Регистрация обработчиков событий для управления состоянием Wi-Fi
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, &handler_on_wifi_disconnect, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &handler_on_sta_got_ip, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, &handler_on_wifi_connect, NULL));
 
-    // Настройка WiFi в режим STA
-    strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));             // безопасный копирующий метод
-    strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password)); // безопасный копирующий метод
-
+    // Настраиваем Wi-Fi в режиме станции
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
 
-    // Запуск WiFi и подключение
+    // Создание структуры конфигурации для Wi-Fi станции
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = "",
+            .password = "",
+        },
+    };
+
+    // Копируем SSID и пароль в структуру конфигурации
+    strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
+    strncpy((char *)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
+
+    // Устанавливаем конфигурацию Wi-Fi
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+
+    // Запускаем Wi-Fi
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    // Подключаемся к Wi-Fi сети
     ESP_ERROR_CHECK(esp_wifi_connect());
+
+    ESP_LOGI("WiFi", "Connecting to %s...", ssid);
 }
 
 /* Обработчик событий программного таймера c периодоим 1 секунда */
@@ -3293,7 +3312,8 @@ void app_main(void)
     ESP_LOGI(tag, "Firmware time: %s", app_time);
 
     move_status = _string("stopped");
-    wifi_init();
+
+    wifi_init_sta();
 
     xTaskCreate(led_task, "led_task", 4096, NULL, 3, NULL);
     xTaskCreate(init_btn_task, "init_btn_task", 2048, NULL, 3, NULL);
