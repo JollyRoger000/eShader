@@ -216,17 +216,26 @@ static void handler_on_wifi_connect(void *esp_netif, esp_event_base_t event_base
 static void handler_on_sta_got_ip(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static httpd_handle_t server_setup(void);
 
-// Функция инициализации spiffs
+/**
+ * @brief Инициализация SPIFFS (SPI Flash File System).
+ *
+ * Эта функция монтирует раздел SPIFFS и выводит информацию о разделе в лог.
+ * Если не удается смонтировать файловую систему, она будет отформатирована.
+ * 
+ * @note Необходимо вызывать эту функцию перед использованием файловой системы SPIFFS.
+ */
 static void init_spiffs(void)
 {
-    const char *tag = "init_spiffs";
+    const char *tag = "init_spiffs";  ///< Тег для логов
 
+    // Конфигурация для SPIFFS
     esp_vfs_spiffs_conf_t conf = {
-        .base_path = "/spiffs",
-        .partition_label = NULL,
-        .max_files = 5,
-        .format_if_mount_failed = true};
+        .base_path = "/spiffs",           ///< Базовый путь для файловой системы
+        .partition_label = NULL,          ///< Использовать метку по умолчанию
+        .max_files = 5,                   ///< Максимальное количество открытых файлов
+        .format_if_mount_failed = true};   ///< Форматировать, если не удалось смонтировать
 
+    // Регистрация файловой системы SPIFFS
     esp_err_t ret = esp_vfs_spiffs_register(&conf);
     if (ret != ESP_OK)
     {
@@ -245,6 +254,7 @@ static void init_spiffs(void)
         return;
     }
 
+    // Получение информации о разделе SPIFFS
     size_t total = 0, used = 0;
     ret = esp_spiffs_info(conf.partition_label, &total, &used);
     if (ret != ESP_OK)
@@ -256,7 +266,6 @@ static void init_spiffs(void)
         ESP_LOGI(tag, "Partition size: total: %d, used: %d", total, used);
     }
 }
-
 // Функция для настройки HTTP-сервера
 esp_err_t root_get_handler(httpd_req_t *req)
 {
