@@ -1780,7 +1780,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
                             ESP_LOGW(tag, "Shade is not calibrated");
                             move_status = _string("stopped");
                         }
-
+                        
                         // Публикуем топик статуса
                         char *str = mqttStatusJson();
                         mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
@@ -2584,6 +2584,11 @@ static void move_task(void *param)
         ESP_LOGI(tag, "SM on target: %d", target_pos);
     }
 
+    // Публикуем топик статуса
+    char *str = mqttStatusJson();
+    mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
+    vPortFree(str);
+
     tgMessage = _stringf("%s\n\nЗатемнение:  %d%%\nСостояние: %s", mqttHostname, shade, move_status);
     send_telegram_message(tgMessage);
 
@@ -2618,9 +2623,9 @@ static void move_task(void *param)
     nvs_write_u16("target_pos", target_pos);
 
     // Публикуем топик статуса
-    char *str = mqttStatusJson();
-    mqttPublish(mqttClient, mqttTopicStatus, str, mqttTopicStatusQoS, mqttTopicStatusRet);
-    vPortFree(str);
+    char *str1 = mqttStatusJson();
+    mqttPublish(mqttClient, mqttTopicStatus, str1, mqttTopicStatusQoS, mqttTopicStatusRet);
+    vPortFree(str1);
 
     tgMessage = _stringf("%s\n\nЗатемнение:  %d%%\nСостояние: %s", mqttHostname, shade, move_status);
     send_telegram_message(tgMessage);
