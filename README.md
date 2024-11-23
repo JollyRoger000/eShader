@@ -1,76 +1,97 @@
-# ESP32 Smart Home Controller
+# ESP32 Smart Shade Controller
 
-## Описание
+A smart device controller for motorized window shades/blinds with WiFi connectivity, MQTT control, and OTA update capabilities.
 
-Этот проект представляет собой контроллер для умного дома, работающий на базе ESP32 с использованием FreeRTOS. Он позволяет управлять различными сервисами и устройствами через MQTT-сообщения, а также поддерживает взаимодействие с Telegram и синхронизацию времени.
+## Features
 
-## Функциональность
+- Stepper motor control for precise shade positioning
+- WiFi connectivity with SmartConfig support
+- MQTT integration for remote control and status updates
+- Telegram notifications for status changes
+- Over-the-Air (OTA) firmware updates
+- LED status indication
+- Position calibration
+- Non-volatile storage for settings
+- Physical initialization button
 
-- Подключение к WiFi и MQTT-брокеру с поддержкой TLS.
-- Взаимодействие с OpenWeather для получения погодных данных.
-- Уведомления через Telegram.
-- Обновление прошивки по воздуху (OTA).
-- Установка и управление таймерами на основе восхода и заката.
-- Поддержка управления через MQTT с получением статусов и команд.
+## Hardware Requirements
 
-## Установка
+- ESP32 microcontroller
+- Stepper motor
+- LED status indicator
+- Initialization button
+- Power supply
 
-### Зависимости
+## Pin Configuration
 
-Для сборки проекта требуется:
+- SM_DIR: Stepper motor direction pin
+- SM_STEP: Stepper motor step pin
+- SM_nEN: Stepper motor enable pin
+- LED_STATUS: Status LED pin
+
+## Operating Modes
+
+### Normal Operation
+- Controls shade position (0-100%)
+- Maintains current position in NVS memory
+- Provides real-time status updates via MQTT and Telegram
+
+### Calibration Mode
+- Allows for system calibration
+- Counts total steps for full range of motion
+- Updates system parameters automatically
+
+### LED Status Indicators
+
+- Short single blink: SmartConfig initialization
+- Fast double blink: SmartConfig device found
+- Long blink: WiFi connection in progress
+- Double short blink: OTA update starting
+- Fast double blink: OTA server connected
+- Solid LED: System reinitializing or OTA update complete
+
+## MQTT Integration
+
+The device publishes status updates to configured MQTT topics including:
+- Current position
+- Target position
+- Movement status
+- Device hostname
+
+## Telegram Integration
+
+Sends notifications for:
+- Position changes
+- Operating status updates
+- System events
+
+## OTA Updates
+
+Supports secure HTTPS OTA updates with:
+- Image validation
+- Update progress monitoring
+- Automatic restart after successful update
+- Update timestamp storage
+- Update URL storage in NVS
+
+## Building and Flashing
+
+[]
+
+## Configuration
+
+[Add configuration instructions including:
+- WiFi setup
+- MQTT broker settings
+- Telegram bot setup]
+
+## Dependencies
 
 - ESP-IDF
-- FreeRTOS
+- MQTT client library
+- Telegram bot library
+- ESP32 HTTPS OTA library
 
-### Сборка проекта
+## License
 
-1. Убедитесь, что у вас установлены все необходимые зависимости и ESP-IDF.
-2. Скачайте проект на ваше устройство.
-3. Откройте проект в терминале и выполните команду для настройки:
-
-   ```bash
-   idf.py menuconfig
-Необходимо настроить параметры WiFi и MQTT.
-
-4. Сборка и прошивка проекта:
-
-   idf.py build
-   idf.py flash
-
-## Использование
-
-После успешной сборки и прошивки ESP32:
-
-- Убедитесь, что ваш MQTT-брокер запущен и доступен.
-- Подключите устройство к WiFi.
-- Используйте клиент MQTT для отправки команд и получения статусов.
-- Вы можете использовать Telegram для получения уведомлений и управления устройством.
-
-## Конфигурация
-
-Измените параметры конфигурации, такие как данные для подключения к MQTT, в файле config.h:
-
-const char *mqttServer = "YOUR_MQTT_SERVER";
-const char *mqttUser = "YOUR_MQTT_USER";
-const char *mqttPass = "YOUR_MQTT_PASSWORD";
-
-## Лицензия
-
-Этот проект лицензирован на условиях MIT License. См. файл LICENSE для получения дополнительной информации.
-
-## Контрибьюция
-
-Пожалуйте, присылайте запросы на внесение изменений или создавайте проблемы, если вы обнаружили какие-либо ошибки или у вас есть предложения по улучшению проекта.
-
-## Установка и запуск
-
-Для поддержки данного проекта потребуется установить инструменты и пакеты, описанные в [официальной документации ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/index.html).
-
-### Примечания
-
-- Убедитесь, что устройство подключено к интернету для использования функций, таких как OTA и обновление погоды.
-- Проверьте все ключи и необходимые параметры перед запуском.
-
-## Authors
-
-- [Ваше имя]
+[]
