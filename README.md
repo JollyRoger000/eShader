@@ -1,32 +1,76 @@
-# _Sample project_
+# ESP32 Smart Home Controller
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+## Описание
 
-This is the simplest buildable example. The example is used by command `idf.py create-project`
-that copies the project to user specified path and set it's name. For more information follow the [docs page](https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html#start-a-new-project)
+Этот проект представляет собой контроллер для умного дома, работающий на базе ESP32 с использованием FreeRTOS. Он позволяет управлять различными сервисами и устройствами через MQTT-сообщения, а также поддерживает взаимодействие с Telegram и синхронизацию времени.
 
+## Функциональность
 
+- Подключение к WiFi и MQTT-брокеру с поддержкой TLS.
+- Взаимодействие с OpenWeather для получения погодных данных.
+- Уведомления через Telegram.
+- Обновление прошивки по воздуху (OTA).
+- Установка и управление таймерами на основе восхода и заката.
+- Поддержка управления через MQTT с получением статусов и команд.
 
-## How to use example
-We encourage the users to use the example as a template for the new projects.
-A recommended way is to follow the instructions on a [docs page](https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html#start-a-new-project).
+## Установка
 
-## Example folder contents
+### Зависимости
 
-The project **sample_project** contains one source file in C language [main.c](main/main.c). The file is located in folder [main](main).
+Для сборки проекта требуется:
 
-ESP-IDF projects are built using CMake. The project build configuration is contained in `CMakeLists.txt`
-files that provide set of directives and instructions describing the project's source files and targets
-(executable, library, or both). 
+- ESP-IDF
+- FreeRTOS
 
-Below is short explanation of remaining files in the project folder.
+### Сборка проекта
 
-```
-├── CMakeLists.txt
-├── main
-│   ├── CMakeLists.txt
-│   └── main.c
-└── README.md                  This is the file you are currently reading
-```
-Additionally, the sample project contains Makefile and component.mk files, used for the legacy Make based build system. 
-They are not used or needed when building with CMake and idf.py.
+1. Убедитесь, что у вас установлены все необходимые зависимости и ESP-IDF.
+2. Скачайте проект на ваше устройство.
+3. Откройте проект в терминале и выполните команду для настройки:
+
+   ```bash
+   idf.py menuconfig
+Необходимо настроить параметры WiFi и MQTT.
+
+4. Сборка и прошивка проекта:
+
+   idf.py build
+   idf.py flash
+
+## Использование
+
+После успешной сборки и прошивки ESP32:
+
+- Убедитесь, что ваш MQTT-брокер запущен и доступен.
+- Подключите устройство к WiFi.
+- Используйте клиент MQTT для отправки команд и получения статусов.
+- Вы можете использовать Telegram для получения уведомлений и управления устройством.
+
+## Конфигурация
+
+Измените параметры конфигурации, такие как данные для подключения к MQTT, в файле config.h:
+
+const char *mqttServer = "YOUR_MQTT_SERVER";
+const char *mqttUser = "YOUR_MQTT_USER";
+const char *mqttPass = "YOUR_MQTT_PASSWORD";
+
+## Лицензия
+
+Этот проект лицензирован на условиях MIT License. См. файл LICENSE для получения дополнительной информации.
+
+## Контрибьюция
+
+Пожалуйте, присылайте запросы на внесение изменений или создавайте проблемы, если вы обнаружили какие-либо ошибки или у вас есть предложения по улучшению проекта.
+
+## Установка и запуск
+
+Для поддержки данного проекта потребуется установить инструменты и пакеты, описанные в [официальной документации ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/index.html).
+
+### Примечания
+
+- Убедитесь, что устройство подключено к интернету для использования функций, таких как OTA и обновление погоды.
+- Проверьте все ключи и необходимые параметры перед запуском.
+
+## Authors
+
+- [Ваше имя]
